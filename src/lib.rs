@@ -80,22 +80,37 @@ impl<'vtab> VTab<'vtab> for UrlTable {
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
         let mut used_cols = Vec::new();
+        let mut used_ops = Vec::new(); // Almacenar los operadores utilizados
 
+        // Recorremos las restricciones y las procesamos
         for (i, constraint) in info.constraints().iter_mut().enumerate() {
-            if constraint.usable() && constraint.op() == Some(ConstraintOperator::EQ) {
+            if constraint.usable() {
+                // Detectamos los operadores de comparación
+                let op = match constraint.op() {
+                    Some(ConstraintOperator::EQ) => "=",
+                    Some(ConstraintOperator::GT) => ">",
+                    Some(ConstraintOperator::LT) => "<",
+                    Some(ConstraintOperator::GE) => ">=",
+                    Some(ConstraintOperator::LE) => "<=",
+                    Some(ConstraintOperator::NE) => "!=",
+                    _ => continue, // Si no es un operador válido, lo omitimos
+                };
+
                 info.constraints()[i].set_argv_index((used_cols.len() + 1) as i32); // 1-based
                 used_cols.push(constraint.column_idx());
+                used_ops.push(op);
             }
         }
 
-        let _ = info.set_idxstr(
-            &used_cols
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        info.set_idxnum(used_cols.len().try_into().unwrap());
+        let idx_str = used_cols
+            .iter()
+            .zip(used_ops.iter())
+            .map(|(col, op)| format!("{}{}", col, op))
+            .collect::<Vec<String>>()
+            .join(",");
+
+        let _ = info.set_idxstr(&idx_str);
+        info.set_idxnum(used_cols.len() as i32);
 
         Ok(())
     }
@@ -134,29 +149,65 @@ impl VTabCursor for UrlCursor {
         let mut filtered_rows = vtab.rows.clone();
 
         if !args.is_empty() && idx_str.is_some() {
-            let col_indices: Vec<usize> = idx_str
+            let col_ops: Vec<(usize, &str)> = idx_str
                 .unwrap()
                 .split(',')
-                .filter_map(|s| s.parse::<usize>().ok())
+                .filter_map(|part| {
+                    let (col_str, op) = if part.ends_with('=') {
+                        part.split_at(part.len() - 1)
+                    } else {
+                        part.split_at(part.len())
+                    };
+                    col_str.parse::<usize>().ok().map(|col| (col, op))
+                })
                 .collect();
 
-            for (i, col_idx) in col_indices.iter().enumerate() {
+            // Aplicamos los filtros por cada columna y operador
+            for (i, (col_idx, op)) in col_ops.iter().enumerate() {
                 let filter_value = api::value_text(&args[i])?;
-                // println!(
-                //     "Filtrando columna {} ({}) == {}",
-                //     col_idx, vtab.headers[*col_idx], filter_value
-                // );
 
                 filtered_rows = filtered_rows
                     .into_iter()
                     .filter(|row| {
                         let cell_value = row[*col_idx].trim();
-                        cell_value == filter_value
+
+                        // Intentamos comparar como número si es posible
+                        let cell_num = cell_value.parse::<f64>();
+                        let filter_num = filter_value.parse::<f64>();
+
+                        let comparison = if cell_num.is_ok() && filter_num.is_ok() {
+                            let c = cell_num.unwrap();
+                            let f = filter_num.unwrap();
+
+                            match *op {
+                                "=" => c == f,
+                                ">" => c > f,
+                                "<" => c < f,
+                                ">=" => c >= f,
+                                "<=" => c <= f,
+                                "!" => c != f,
+                                _ => false,
+                            }
+                        } else {
+                            // Comparación como texto
+                            match *op {
+                                "=" => cell_value == filter_value,
+                                ">" => cell_value > filter_value,
+                                "<" => cell_value < filter_value,
+                                ">=" => cell_value >= filter_value,
+                                "<=" => cell_value <= filter_value,
+                                "!" => cell_value != filter_value,
+                                _ => false,
+                            }
+                        };
+
+                        comparison
                     })
                     .collect();
             }
         }
 
+        // Asignamos las filas filtradas a la estructura
         self.filtered_rows = filtered_rows;
         self.row_idx = 0;
 
