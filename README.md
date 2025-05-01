@@ -1,6 +1,6 @@
 # sqlite-virtual-url
 
-SQLite3 extension that enables query data from an URL.
+SQLite3 extension for querying data directly from a URL.
 
 ## Run Demo
 
