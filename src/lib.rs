@@ -2,7 +2,7 @@ use csv::ReaderBuilder;
 use reqwest::blocking::get;
 use sqlite_loadable::{
     api, define_virtual_table,
-    table::{BestIndexError, IndexInfo, VTab, VTabArguments, VTabCursor},
+    table::{BestIndexError, ConstraintOperator, IndexInfo, VTab, VTabArguments, VTabCursor},
     Result,
 };
 use sqlite_loadable::{prelude::*, Error};
@@ -13,12 +13,6 @@ struct UrlTable {
     base: sqlite3_vtab,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
-}
-
-#[repr(C)]
-struct UrlCursor {
-    base: sqlite3_vtab_cursor,
-    row_idx: usize,
 }
 
 impl<'vtab> VTab<'vtab> for UrlTable {
@@ -84,7 +78,29 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         Ok(())
     }
 
-    fn best_index(&self, mut _info: IndexInfo) -> core::result::Result<(), BestIndexError> {
+    fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
+        for inf in info.constraints().iter() {
+            println!("{:#?}", inf)
+        }
+
+        let mut used_cols = Vec::new();
+
+        for (i, constraint) in info.constraints().iter_mut().enumerate() {
+            if constraint.usable() && constraint.op() == Some(ConstraintOperator::EQ) {
+                info.constraints()[i].set_argv_index((used_cols.len() + 1) as i32); // 1-based
+                used_cols.push(constraint.column_idx());
+            }
+        }
+
+        let _ = info.set_idxstr(
+            &used_cols
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        info.set_idxnum(used_cols.len().try_into().unwrap());
+
         Ok(())
     }
 
@@ -93,10 +109,21 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     }
 }
 
+#[repr(C)]
+struct UrlCursor {
+    base: sqlite3_vtab_cursor,
+    row_idx: usize,
+    filtered_rows: Vec<Vec<String>>,
+}
+
 impl UrlCursor {
     fn new() -> UrlCursor {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };
-        UrlCursor { base, row_idx: 0 }
+        UrlCursor {
+            base,
+            row_idx: 0,
+            filtered_rows: Vec::<Vec<String>>::new(),
+        }
     }
 }
 
@@ -104,10 +131,58 @@ impl VTabCursor for UrlCursor {
     fn filter(
         &mut self,
         _idx_num: c_int,
-        _idx_str: Option<&str>,
-        _args: &[*mut sqlite3_value],
+        idx_str: Option<&str>,
+        args: &[*mut sqlite3_value],
     ) -> Result<()> {
+        println!("idx_str {:?}", idx_str);
+        println!("args.len {:?}", args.len());
+
+        let vtab: &mut UrlTable = unsafe { &mut *(self.base.pVtab as *mut UrlTable) };
         self.row_idx = 0;
+
+        // Si no hay filtros, dejamos todas las filas
+        if args.is_empty() || idx_str.is_none() {
+            return Ok(());
+        }
+
+        // Obtenemos los índices de columna desde idx_str (ej. "0,2,4")
+        let col_indices: Vec<usize> = idx_str
+            .unwrap()
+            .split(',')
+            .filter_map(|s| s.parse::<usize>().ok())
+            .collect();
+
+        // Empezamos con todas las filas
+        let mut filtered_rows = vtab.rows.clone();
+
+        // Aplicamos cada filtro
+        for (i, col_idx) in col_indices.iter().enumerate() {
+            let filter_value = api::value_text(&args[i])?;
+            println!(
+                "Filtrando columna {} ({}) == {}",
+                col_idx, vtab.headers[*col_idx], filter_value
+            );
+
+            filtered_rows = filtered_rows
+                .into_iter()
+                .filter(|row| {
+                    let cell_value = row[*col_idx].trim();
+                    if cell_value == filter_value {
+                        println!(
+                            "Comparando '{}' con '{}' -> {}",
+                            cell_value,
+                            filter_value,
+                            cell_value == filter_value
+                        );
+                    }
+                    cell_value == filter_value
+                })
+                .collect();
+        }
+
+        println!("{:#?}", filtered_rows);
+        self.filtered_rows = filtered_rows;
+
         Ok(())
     }
 

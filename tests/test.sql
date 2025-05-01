@@ -9,3 +9,5 @@ CREATE VIRTUAL TABLE demo USING URL('https://raw.githubusercontent.com/plotly/da
 
 .timer on
 SELECT * FROM demo LIMIT 10;
+
+SELECT * FROM demo WHERE name = 'Chicago';
