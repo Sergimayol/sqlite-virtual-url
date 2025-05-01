@@ -1,7 +1,7 @@
 use csv::ReaderBuilder;
 use reqwest::blocking::get;
 use sqlite_loadable::{
-    api, define_table_function, define_virtual_table,
+    api, define_virtual_table,
     table::{BestIndexError, IndexInfo, VTab, VTabArguments, VTabCursor},
     Result,
 };
