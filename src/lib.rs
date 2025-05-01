@@ -80,12 +80,10 @@ impl<'vtab> VTab<'vtab> for UrlTable {
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
         let mut used_cols = Vec::new();
-        let mut used_ops = Vec::new(); // Almacenar los operadores utilizados
+        let mut used_ops = Vec::new();
 
-        // Recorremos las restricciones y las procesamos
         for (i, constraint) in info.constraints().iter_mut().enumerate() {
             if constraint.usable() {
-                // Detectamos los operadores de comparación
                 let op = match constraint.op() {
                     Some(ConstraintOperator::EQ) => "=",
                     Some(ConstraintOperator::GT) => ">",
@@ -93,7 +91,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                     Some(ConstraintOperator::GE) => ">=",
                     Some(ConstraintOperator::LE) => "<=",
                     Some(ConstraintOperator::NE) => "!=",
-                    _ => continue, // Si no es un operador válido, lo omitimos
+                    _ => continue,
                 };
 
                 info.constraints()[i].set_argv_index((used_cols.len() + 1) as i32); // 1-based
@@ -162,7 +160,6 @@ impl VTabCursor for UrlCursor {
                 })
                 .collect();
 
-            // Aplicamos los filtros por cada columna y operador
             for (i, (col_idx, op)) in col_ops.iter().enumerate() {
                 let filter_value = api::value_text(&args[i])?;
 
@@ -171,7 +168,6 @@ impl VTabCursor for UrlCursor {
                     .filter(|row| {
                         let cell_value = row[*col_idx].trim();
 
-                        // Intentamos comparar como número si es posible
                         let cell_num = cell_value.parse::<f64>();
                         let filter_num = filter_value.parse::<f64>();
 
@@ -179,6 +175,7 @@ impl VTabCursor for UrlCursor {
                             let c = cell_num.unwrap();
                             let f = filter_num.unwrap();
 
+                            // Num comp.
                             match *op {
                                 "=" => c == f,
                                 ">" => c > f,
@@ -189,7 +186,7 @@ impl VTabCursor for UrlCursor {
                                 _ => false,
                             }
                         } else {
-                            // Comparación como texto
+                            // Text comp.
                             match *op {
                                 "=" => cell_value == filter_value,
                                 ">" => cell_value > filter_value,
