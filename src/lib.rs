@@ -51,7 +51,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         for result in rdr.records() {
             let record =
                 result.map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?;
-            rows.push(record.iter().map(|s| s.to_string()).collect());
+            rows.push(record.iter().map(|s| s.trim().to_string()).collect());
         }
 
         let schema = format!(
@@ -79,10 +79,6 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     }
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
-        for inf in info.constraints().iter() {
-            println!("{:#?}", inf)
-        }
-
         let mut used_cols = Vec::new();
 
         for (i, constraint) in info.constraints().iter_mut().enumerate() {
@@ -105,7 +101,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     }
 
     fn open(&mut self) -> Result<UrlCursor> {
-        Ok(UrlCursor::new())
+        Ok(UrlCursor::new(self.rows.clone()))
     }
 }
 
@@ -117,12 +113,12 @@ struct UrlCursor {
 }
 
 impl UrlCursor {
-    fn new() -> UrlCursor {
+    fn new(all_rows: Vec<Vec<String>>) -> UrlCursor {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };
         UrlCursor {
             base,
             row_idx: 0,
-            filtered_rows: Vec::<Vec<String>>::new(),
+            filtered_rows: all_rows,
         }
     }
 }
@@ -134,54 +130,35 @@ impl VTabCursor for UrlCursor {
         idx_str: Option<&str>,
         args: &[*mut sqlite3_value],
     ) -> Result<()> {
-        println!("idx_str {:?}", idx_str);
-        println!("args.len {:?}", args.len());
-
-        let vtab: &mut UrlTable = unsafe { &mut *(self.base.pVtab as *mut UrlTable) };
-        self.row_idx = 0;
-
-        // Si no hay filtros, dejamos todas las filas
-        if args.is_empty() || idx_str.is_none() {
-            return Ok(());
-        }
-
-        // Obtenemos los índices de columna desde idx_str (ej. "0,2,4")
-        let col_indices: Vec<usize> = idx_str
-            .unwrap()
-            .split(',')
-            .filter_map(|s| s.parse::<usize>().ok())
-            .collect();
-
-        // Empezamos con todas las filas
+        let vtab: &UrlTable = unsafe { &*(self.base.pVtab as *mut UrlTable) };
         let mut filtered_rows = vtab.rows.clone();
 
-        // Aplicamos cada filtro
-        for (i, col_idx) in col_indices.iter().enumerate() {
-            let filter_value = api::value_text(&args[i])?;
-            println!(
-                "Filtrando columna {} ({}) == {}",
-                col_idx, vtab.headers[*col_idx], filter_value
-            );
-
-            filtered_rows = filtered_rows
-                .into_iter()
-                .filter(|row| {
-                    let cell_value = row[*col_idx].trim();
-                    if cell_value == filter_value {
-                        println!(
-                            "Comparando '{}' con '{}' -> {}",
-                            cell_value,
-                            filter_value,
-                            cell_value == filter_value
-                        );
-                    }
-                    cell_value == filter_value
-                })
+        if !args.is_empty() && idx_str.is_some() {
+            let col_indices: Vec<usize> = idx_str
+                .unwrap()
+                .split(',')
+                .filter_map(|s| s.parse::<usize>().ok())
                 .collect();
+
+            for (i, col_idx) in col_indices.iter().enumerate() {
+                let filter_value = api::value_text(&args[i])?;
+                // println!(
+                //     "Filtrando columna {} ({}) == {}",
+                //     col_idx, vtab.headers[*col_idx], filter_value
+                // );
+
+                filtered_rows = filtered_rows
+                    .into_iter()
+                    .filter(|row| {
+                        let cell_value = row[*col_idx].trim();
+                        cell_value == filter_value
+                    })
+                    .collect();
+            }
         }
 
-        println!("{:#?}", filtered_rows);
         self.filtered_rows = filtered_rows;
+        self.row_idx = 0;
 
         Ok(())
     }
@@ -192,14 +169,16 @@ impl VTabCursor for UrlCursor {
     }
 
     fn eof(&self) -> bool {
-        let vtab = unsafe { &*(self.base.pVtab as *mut UrlTable) };
-        self.row_idx >= vtab.rows.len()
+        self.row_idx >= self.filtered_rows.len()
     }
 
     fn column(&self, context: *mut sqlite3_context, i: c_int) -> Result<()> {
-        let vtab = unsafe { &*(self.base.pVtab as *mut UrlTable) };
-        if let Some(value) = vtab.rows[self.row_idx].get(i as usize) {
-            let _ = api::result_text(context, value);
+        if let Some(row) = self.filtered_rows.get(self.row_idx) {
+            if let Some(value) = row.get(i as usize) {
+                api::result_text(context, value)?;
+            } else {
+                api::result_null(context);
+            }
         } else {
             api::result_null(context);
         }
@@ -207,7 +186,7 @@ impl VTabCursor for UrlCursor {
     }
 
     fn rowid(&self) -> Result<i64> {
-        Ok(self.row_idx.try_into().unwrap())
+        Ok(self.row_idx as i64)
     }
 }
 
