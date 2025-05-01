@@ -14,3 +14,5 @@ SELECT * FROM demo WHERE name = 'Chicago';
 SELECT * FROM demo WHERE pop > 1000000 LIMIT 5;
 SELECT * FROM demo WHERE lat >= 33.0 AND name != 'Logan' LIMIT 5;
 SELECT * FROM demo WHERE name != 'Logan' LIMIT 5;
+SELECT name FROM demo WHERE name != 'Logan' LIMIT 5;
+SELECT COUNT(*) as total_cities FROM demo WHERE pop > 1000000;
