@@ -234,7 +234,6 @@ impl VTabCursor for UrlCursor {
             }
         }
 
-        // Asignamos las filas filtradas a la estructura
         self.filtered_rows = filtered_rows;
         self.row_idx = 0;
 
