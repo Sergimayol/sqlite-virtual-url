@@ -16,3 +16,8 @@ SELECT * FROM demo WHERE lat >= 33.0 AND name != 'Logan' LIMIT 5;
 SELECT * FROM demo WHERE name != 'Logan' LIMIT 5;
 SELECT name FROM demo WHERE name != 'Logan' LIMIT 5;
 SELECT COUNT(*) as total_cities FROM demo WHERE pop > 1000000;
+
+.timer off
+CREATE VIRTUAL TABLE demo2 USING URL(url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv');
+.timer on
+SELECT AVG(pop) as avg_pop FROM demo2;

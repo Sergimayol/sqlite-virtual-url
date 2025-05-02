@@ -6,7 +6,30 @@ use sqlite_loadable::{
     Result,
 };
 use sqlite_loadable::{prelude::*, Error};
-use std::{mem, os::raw::c_int};
+use std::{collections::HashMap, mem, os::raw::c_int};
+
+#[derive(Debug)]
+struct ParsedArgs {
+    named: HashMap<String, String>,
+    positional: Vec<String>,
+}
+
+fn parse_args(args: Vec<String>) -> ParsedArgs {
+    let mut named = HashMap::new();
+    let mut positional = Vec::new();
+
+    for arg in args {
+        if let Some(eq_pos) = arg.find('=') {
+            let key = arg[..eq_pos].trim().to_string().to_uppercase();
+            let value = arg[eq_pos + 1..].trim().to_string();
+            named.insert(key, value);
+        } else {
+            positional.push(arg.trim().to_string());
+        }
+    }
+
+    ParsedArgs { named, positional }
+}
 
 #[repr(C)]
 struct UrlTable {
@@ -29,7 +52,14 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             return Err(Error::new_message("URL argument missing"));
         }
 
-        let url = args[0].trim_matches(|c| c == '\'' || c == '"');
+        let parsed_args = parse_args(args);
+        let url = match parsed_args.named.get("URL") {
+            Some(url_val) => url_val.trim_matches(|c| c == '\'' || c == '"').to_string(),
+            None => match parsed_args.positional.get(0) {
+                Some(pos_val) => pos_val.trim_matches(|c| c == '\'' || c == '"').to_string(),
+                None => return Err(Error::new_message("No URL provided")),
+            },
+        };
 
         let resp = get(url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
