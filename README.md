@@ -35,3 +35,27 @@ sqlite3 :memory: '.read tests/test.sql'
 └───────────────┴─────────┴────────────┴──────────────┘
 Run Time: real 0.000 user 0.000106 sys 0.000008
 ```
+
+## Usage
+
+1. **Load the extension**
+
+```sql
+SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+-- or
+.load target/release/libsqlite_virtual_url sqlite3_url_init
+```
+
+2. **Create a virtual table using `url`**
+
+```sql
+CREATE VIRTUAL TABLE us_cities USING URL('https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv');
+-- or
+CREATE VIRTUAL TABLE us_cities USING URL(url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv');
+```
+
+3. **Query the table**
+
+```sql
+SELECT * FROM us_cities WHERE lat >= 33.0 AND name != 'Logan' LIMIT 5;
+```
