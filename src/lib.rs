@@ -1,3 +1,4 @@
+use apache_avro::{from_value, Reader};
 use csv::ReaderBuilder;
 use reqwest::blocking::get;
 use sqlite_loadable::{
@@ -21,14 +22,30 @@ fn parse_args(args: Vec<String>) -> ParsedArgs {
     for arg in args {
         if let Some(eq_pos) = arg.find('=') {
             let key = arg[..eq_pos].trim().to_string().to_uppercase();
-            let value = arg[eq_pos + 1..].trim().to_string();
+            let value = arg[eq_pos + 1..]
+                .trim_matches(|c| c == '\'' || c == '"')
+                .to_string();
             named.insert(key, value);
         } else {
-            positional.push(arg.trim().to_string());
+            positional.push(arg.trim_matches(|c| c == '\'' || c == '"').to_string());
         }
     }
 
     ParsedArgs { named, positional }
+}
+
+#[derive(Debug)]
+enum VTabDataFormats {
+    CSV,
+    AVRO,
+}
+
+fn get_format(fmt: &str) -> Result<VTabDataFormats> {
+    match fmt.to_uppercase().as_str() {
+        "CSV" => Ok(VTabDataFormats::CSV),
+        "AVRO" => Ok(VTabDataFormats::AVRO),
+        _ => Err(Error::new_message(&format!("Unknown data format: {}", fmt))),
+    }
 }
 
 #[repr(C)]
@@ -54,39 +71,58 @@ impl<'vtab> VTab<'vtab> for UrlTable {
 
         let parsed_args = parse_args(args);
         let url = match parsed_args.named.get("URL") {
-            Some(url_val) => url_val.trim_matches(|c| c == '\'' || c == '"').to_string(),
+            Some(url_val) => url_val.to_string(),
             None => match parsed_args.positional.get(0) {
-                Some(pos_val) => pos_val.trim_matches(|c| c == '\'' || c == '"').to_string(),
+                Some(pos_val) => pos_val.to_string(),
                 None => return Err(Error::new_message("No URL provided")),
             },
         };
 
+        let format = match parsed_args.named.get("FORMAT") {
+            Some(t_fmt) => get_format(t_fmt),
+            None => match parsed_args.positional.get(1) {
+                Some(pos_val) => get_format(pos_val),
+                None => return Err(Error::new_message("No data format specified")),
+            },
+        };
+        println!("FORMAT {:#?}", format);
+
         let resp = get(url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
-            .text()
+            .bytes()
             .map_err(|e| Error::new_message(&format!("Read error: {}", e)))?;
 
-        let mut rdr = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(resp.as_bytes());
+        let (data_headers, data_rows) = match format {
+            Ok(fmt) => match fmt {
+                VTabDataFormats::CSV => {
+                    let mut rdr = ReaderBuilder::new()
+                        .has_headers(true)
+                        .from_reader(resp.as_ref());
 
-        let headers = rdr
-            .headers()
-            .map_err(|e| Error::new_message(&format!("CSV header error: {}", e)))?
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
+                    let headers = rdr
+                        .headers()
+                        .map_err(|e| Error::new_message(&format!("CSV header error: {}", e)))?
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>();
 
-        let mut rows = Vec::new();
-        for result in rdr.records() {
-            let record =
-                result.map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?;
-            rows.push(record.iter().map(|s| s.trim().to_string()).collect());
-        }
+                    let mut rows = Vec::new();
+                    for result in rdr.records() {
+                        let record = result
+                            .map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?;
+                        rows.push(record.iter().map(|s| s.trim().to_string()).collect());
+                    }
+
+                    (headers, rows)
+                }
+                VTabDataFormats::AVRO => todo!() ,
+            },
+            Err(err) => return Err(err),
+        };
 
         let schema = format!(
             "CREATE TABLE x({});",
-            headers
+            data_headers
                 .iter()
                 .map(|h| format!("\"{}\"", h))
                 .collect::<Vec<_>>()
@@ -98,8 +134,8 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             schema,
             UrlTable {
                 base,
-                headers,
-                rows,
+                headers: data_headers,
+                rows: data_rows,
             },
         ))
     }
