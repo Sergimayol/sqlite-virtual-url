@@ -1,4 +1,4 @@
-use apache_avro::{from_value, Reader};
+use avro_rs::Reader;
 use csv::ReaderBuilder;
 use reqwest::blocking::get;
 use sqlite_loadable::{
@@ -85,7 +85,6 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                 None => return Err(Error::new_message("No data format specified")),
             },
         };
-        println!("FORMAT {:#?}", format);
 
         let resp = get(url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
@@ -115,7 +114,39 @@ impl<'vtab> VTab<'vtab> for UrlTable {
 
                     (headers, rows)
                 }
-                VTabDataFormats::AVRO => todo!() ,
+                VTabDataFormats::AVRO => {
+                    let reader = Reader::new(resp.as_ref())
+                        .map_err(|e| Error::new_message(&format!("AVRO parse error: {}", e)))?;
+
+                    let mut headers: Vec<String> = Vec::new();
+                    let mut rows: Vec<Vec<String>> = Vec::new();
+
+                    for record in reader {
+                        let value = record
+                            .map_err(|e| Error::new_message(&format!("AVRO read error: {}", e)))?;
+
+                        if let avro_rs::types::Value::Record(fields) = &value {
+                            if headers.is_empty() {
+                                headers = fields.iter().map(|(k, _)| k.clone()).collect();
+                            }
+                        }
+
+                        if let avro_rs::types::Value::Record(fields) = value {
+                            let mut row = Vec::new();
+                            for header in &headers {
+                                let val_str = fields
+                                    .iter()
+                                    .find(|(k, _)| k == header)
+                                    .map(|(_, v)| format!("{:?}", v))
+                                    .unwrap_or_default();
+                                row.push(val_str);
+                            }
+                            rows.push(row);
+                        }
+                    }
+
+                    (headers, rows)
+                }
             },
             Err(err) => return Err(err),
         };
