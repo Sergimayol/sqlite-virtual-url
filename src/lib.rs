@@ -1,5 +1,6 @@
 use avro_rs::Reader;
 use csv::ReaderBuilder;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use reqwest::blocking::get;
 use sqlite_loadable::{
     api, define_virtual_table,
@@ -38,12 +39,14 @@ fn parse_args(args: Vec<String>) -> ParsedArgs {
 enum VTabDataFormats {
     CSV,
     AVRO,
+    PARQUET,
 }
 
 fn get_format(fmt: &str) -> Result<VTabDataFormats> {
     match fmt.to_uppercase().as_str() {
         "CSV" => Ok(VTabDataFormats::CSV),
         "AVRO" => Ok(VTabDataFormats::AVRO),
+        "PARQUET" => Ok(VTabDataFormats::PARQUET),
         _ => Err(Error::new_message(&format!("Unknown data format: {}", fmt))),
     }
 }
@@ -143,6 +146,38 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                             }
                             rows.push(row);
                         }
+                    }
+
+                    (headers, rows)
+                }
+                VTabDataFormats::PARQUET => {
+                    let reader = SerializedFileReader::new(resp)
+                        .map_err(|e| Error::new_message(&format!("Parquet error: {e}")))?;
+
+                    let iter = reader
+                        .get_row_iter(None)
+                        .map_err(|e| Error::new_message(&format!("Parquet row iter error: {e}")))?;
+
+                    let mut headers: Vec<String> = Vec::new();
+                    let mut rows: Vec<Vec<String>> = Vec::new();
+
+                    for row_result in iter {
+                        let row = row_result
+                            .map_err(|e| Error::new_message(&format!("Row error: {e}")))?;
+
+                        if headers.is_empty() {
+                            headers = row
+                                .get_column_iter()
+                                .map(|(name, _)| name.to_string())
+                                .collect();
+                        }
+
+                        let row_values = row
+                            .get_column_iter()
+                            .map(|(_, val)| format!("{val}"))
+                            .collect::<Vec<String>>();
+
+                        rows.push(row_values);
                     }
 
                     (headers, rows)

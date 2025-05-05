@@ -110,3 +110,28 @@ CREATE VIRTUAL TABLE avro_demo USING URL (
 ```sql
 SELECT * FROM avro_demo LIMIT 5;
 ```
+
+### PARQUET
+
+1. **Load the extension**
+
+```sql
+SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+-- or
+.load target/release/libsqlite_virtual_url sqlite3_url_init
+```
+
+2. **Create a virtual table using `url`**
+
+```sql
+CREATE VIRTUAL TABLE parquet_demo USING URL(
+    url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/oil-and-gas.parquet',
+    format='parquet'
+);
+```
+
+3. **Query the table**
+
+```sql
+SELECT * FROM parquet_demo LIMIT 5;
+```
