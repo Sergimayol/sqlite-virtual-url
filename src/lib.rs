@@ -57,15 +57,14 @@ fn get_format(fmt: &str) -> Result<VTabDataFormats> {
 
 struct AvroReader<'a> {
     data: &'a [u8],
-    series: Option<Vec<Series>>,
 }
 
 impl<'a> AvroReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, series: None }
+        Self { data }
     }
 
-    fn finish(mut self) -> PolarsResult<DataFrame> {
+    fn finish(self) -> PolarsResult<DataFrame> {
         let reader = Reader::new(self.data).unwrap();
 
         let mut col_data: HashMap<String, Vec<AnyValue>> = HashMap::new();
@@ -83,14 +82,13 @@ impl<'a> AvroReader<'a> {
             }
         }
 
-        let series = col_data
+        let columns = col_data
             .into_iter()
-            .map(|(col, values)| Series::new(&col, values))
-            .collect();
+            .map(|(col, values)| Series::new(col.into(), values))
+            .map(|s| Column::new(s.name().clone(), s))
+            .collect::<Vec<_>>();
 
-        self.series = Some(series);
-
-        DataFrame::new(self.series.unwrap())
+        DataFrame::new(columns)
     }
 
     fn map_value_to_any(value: Value) -> AnyValue<'a> {
@@ -123,8 +121,8 @@ impl<'a> AvroReader<'a> {
 
             Value::TimeMillis(ms) => AnyValue::Int32(ms),
             Value::TimeMicros(us) => AnyValue::Int64(us),
-            Value::TimestampMillis(ms) => AnyValue::Datetime(ms, TimeUnit::Milliseconds, &None),
-            Value::TimestampMicros(us) => AnyValue::Datetime(us, TimeUnit::Microseconds, &None),
+            Value::TimestampMillis(ms) => AnyValue::Datetime(ms, TimeUnit::Milliseconds, None),
+            Value::TimestampMicros(us) => AnyValue::Datetime(us, TimeUnit::Microseconds, None),
 
             Value::Uuid(s) => AnyValue::StringOwned(s.to_string().into()),
             Value::Fixed(_, bytes) => AnyValue::BinaryOwned(bytes.into()),
