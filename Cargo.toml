@@ -7,8 +7,17 @@ edition = "2021"
 sqlite-loadable = { version = "0.0.6-alpha.6" }
 reqwest = { version = "0.12", features = ["blocking"] }
 csv = "1"
-avro-rs = { version = "0.13.0" , features = ["snappy"] }
+avro-rs = { version = "0.13.0", features = ["snappy"] }
 parquet = "55.0.0"
+chrono = "0.4.41"
+polars = { version = "0.42.0", features = [
+    "lazy",
+    "csv",
+    "json",
+    "parquet",
+    "strings",
+] }
+
 
 [lib]
 crate-type = ["cdylib"]

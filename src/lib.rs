@@ -1,6 +1,5 @@
-use avro_rs::Reader;
-use csv::ReaderBuilder;
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use avro_rs::{types::Value, Reader};
+use polars::prelude::*;
 use reqwest::blocking::get;
 use sqlite_loadable::{
     api, define_virtual_table,
@@ -51,11 +50,113 @@ fn get_format(fmt: &str) -> Result<VTabDataFormats> {
     }
 }
 
+struct AvroReader<'a> {
+    data: &'a [u8],
+    series: Option<Vec<Series>>,
+}
+
+impl<'a> AvroReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, series: None }
+    }
+
+    fn finish(mut self) -> PolarsResult<DataFrame> {
+        let reader = Reader::new(self.data).unwrap();
+
+        let mut col_data: HashMap<String, Vec<AnyValue>> = HashMap::new();
+
+        for record in reader {
+            let value = record.unwrap();
+
+            if let Value::Record(fields) = value {
+                for (k, v) in fields {
+                    col_data
+                        .entry(k.clone())
+                        .or_insert_with(Vec::new)
+                        .push(Self::map_value_to_any(v));
+                }
+            }
+        }
+
+        let series = col_data
+            .into_iter()
+            .map(|(col, values)| Series::new(&col, values))
+            .collect();
+
+        self.series = Some(series);
+
+        DataFrame::new(self.series.unwrap())
+    }
+
+    fn map_value_to_any(value: Value) -> AnyValue<'a> {
+        match value {
+            Value::String(s) => AnyValue::StringOwned(s.into()),
+            Value::Int(i) => AnyValue::Int32(i),
+            Value::Long(l) => AnyValue::Int64(l),
+            Value::Float(f) => AnyValue::Float32(f),
+            Value::Double(d) => AnyValue::Float64(d),
+            Value::Boolean(b) => AnyValue::Boolean(b),
+            Value::Null => AnyValue::Null,
+            Value::Bytes(b) => AnyValue::BinaryOwned(b.into()),
+
+            Value::Date(days) => {
+                let date = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+                    .unwrap()
+                    .checked_add_days(chrono::Days::new(days as u64));
+                match date {
+                    Some(d) => {
+                        let epoch_days = d
+                            .signed_duration_since(
+                                chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+                            )
+                            .num_days() as i32;
+                        AnyValue::Date(epoch_days)
+                    }
+                    None => AnyValue::Null,
+                }
+            }
+
+            Value::TimeMillis(ms) => AnyValue::Int32(ms),
+            Value::TimeMicros(us) => AnyValue::Int64(us),
+            Value::TimestampMillis(ms) => AnyValue::Datetime(ms, TimeUnit::Milliseconds, &None),
+            Value::TimestampMicros(us) => AnyValue::Datetime(us, TimeUnit::Microseconds, &None),
+
+            Value::Uuid(s) => AnyValue::StringOwned(s.to_string().into()),
+            Value::Fixed(_, bytes) => AnyValue::BinaryOwned(bytes.into()),
+            Value::Enum(_, symbol) => AnyValue::StringOwned(symbol.into()),
+
+            Value::Decimal(decimal) => AnyValue::StringOwned(format!("{:?}", decimal).into()),
+
+            Value::Array(arr) => {
+                let repr = format!("{:?}", arr);
+                AnyValue::StringOwned(repr.into())
+            }
+
+            Value::Map(map) => {
+                let repr = format!("{:?}", map);
+                AnyValue::StringOwned(repr.into())
+            }
+
+            Value::Record(fields) => {
+                let repr = format!("{:?}", fields);
+                AnyValue::StringOwned(repr.into())
+            }
+
+            Value::Duration(duration) => {
+                let repr = format!("{:?}", duration.millis());
+                AnyValue::StringOwned(repr.into())
+            }
+
+            Value::Union(boxed_value) => Self::map_value_to_any(*boxed_value),
+        }
+    }
+}
+
 #[repr(C)]
 struct UrlTable {
     base: sqlite3_vtab,
+    df: DataFrame,
     headers: Vec<String>,
-    rows: Vec<Vec<String>>,
 }
 
 impl<'vtab> VTab<'vtab> for UrlTable {
@@ -73,122 +174,47 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         }
 
         let parsed_args = parse_args(args);
-        let url = match parsed_args.named.get("URL") {
-            Some(url_val) => url_val.to_string(),
-            None => match parsed_args.positional.get(0) {
-                Some(pos_val) => pos_val.to_string(),
-                None => return Err(Error::new_message("No URL provided")),
-            },
-        };
+        let url = parsed_args
+            .named
+            .get("URL")
+            .cloned()
+            .or_else(|| parsed_args.positional.get(0).cloned())
+            .ok_or_else(|| Error::new_message("No URL provided"))?;
 
-        let format = match parsed_args.named.get("FORMAT") {
-            Some(t_fmt) => get_format(t_fmt),
-            None => match parsed_args.positional.get(1) {
-                Some(pos_val) => get_format(pos_val),
-                None => return Err(Error::new_message("No data format specified")),
-            },
-        };
+        let format = parsed_args
+            .named
+            .get("FORMAT")
+            .cloned()
+            .or_else(|| parsed_args.positional.get(1).cloned())
+            .ok_or_else(|| Error::new_message("No data format specified"))
+            .and_then(|f| get_format(&f))?;
 
-        let resp = get(url)
+        let resp = get(&url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
             .bytes()
             .map_err(|e| Error::new_message(&format!("Read error: {}", e)))?;
 
-        let (data_headers, data_rows) = match format {
-            Ok(fmt) => match fmt {
-                VTabDataFormats::CSV => {
-                    let mut rdr = ReaderBuilder::new()
-                        .has_headers(true)
-                        .from_reader(resp.as_ref());
-
-                    let headers = rdr
-                        .headers()
-                        .map_err(|e| Error::new_message(&format!("CSV header error: {}", e)))?
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>();
-
-                    let mut rows = Vec::new();
-                    for result in rdr.records() {
-                        let record = result
-                            .map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?;
-                        rows.push(record.iter().map(|s| s.trim().to_string()).collect());
-                    }
-
-                    (headers, rows)
-                }
-                VTabDataFormats::AVRO => {
-                    let reader = Reader::new(resp.as_ref())
-                        .map_err(|e| Error::new_message(&format!("AVRO parse error: {}", e)))?;
-
-                    let mut headers: Vec<String> = Vec::new();
-                    let mut rows: Vec<Vec<String>> = Vec::new();
-
-                    for record in reader {
-                        let value = record
-                            .map_err(|e| Error::new_message(&format!("AVRO read error: {}", e)))?;
-
-                        if let avro_rs::types::Value::Record(fields) = &value {
-                            if headers.is_empty() {
-                                headers = fields.iter().map(|(k, _)| k.clone()).collect();
-                            }
-                        }
-
-                        if let avro_rs::types::Value::Record(fields) = value {
-                            let mut row = Vec::new();
-                            for header in &headers {
-                                let val_str = fields
-                                    .iter()
-                                    .find(|(k, _)| k == header)
-                                    .map(|(_, v)| format!("{:?}", v))
-                                    .unwrap_or_default();
-                                row.push(val_str);
-                            }
-                            rows.push(row);
-                        }
-                    }
-
-                    (headers, rows)
-                }
-                VTabDataFormats::PARQUET => {
-                    let reader = SerializedFileReader::new(resp)
-                        .map_err(|e| Error::new_message(&format!("Parquet error: {e}")))?;
-
-                    let iter = reader
-                        .get_row_iter(None)
-                        .map_err(|e| Error::new_message(&format!("Parquet row iter error: {e}")))?;
-
-                    let mut headers: Vec<String> = Vec::new();
-                    let mut rows: Vec<Vec<String>> = Vec::new();
-
-                    for row_result in iter {
-                        let row = row_result
-                            .map_err(|e| Error::new_message(&format!("Row error: {e}")))?;
-
-                        if headers.is_empty() {
-                            headers = row
-                                .get_column_iter()
-                                .map(|(name, _)| name.to_string())
-                                .collect();
-                        }
-
-                        let row_values = row
-                            .get_column_iter()
-                            .map(|(_, val)| format!("{val}"))
-                            .collect::<Vec<String>>();
-
-                        rows.push(row_values);
-                    }
-
-                    (headers, rows)
-                }
-            },
-            Err(err) => return Err(err),
+        let df = match format {
+            VTabDataFormats::CSV => CsvReader::new(std::io::Cursor::new(resp))
+                .finish()
+                .map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?,
+            VTabDataFormats::PARQUET => ParquetReader::new(std::io::Cursor::new(resp))
+                .finish()
+                .map_err(|e| Error::new_message(&format!("Parquet parse error: {}", e)))?,
+            VTabDataFormats::AVRO => AvroReader::new(resp.as_ref())
+                .finish()
+                .map_err(|e| Error::new_message(&format!("DataFrame build error: {}", e)))?,
         };
+
+        let headers = df
+            .get_column_names_owned()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let schema = format!(
             "CREATE TABLE x({});",
-            data_headers
+            df.get_column_names()
                 .iter()
                 .map(|h| format!("\"{}\"", h))
                 .collect::<Vec<_>>()
@@ -196,25 +222,14 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         );
 
         let base: sqlite3_vtab = unsafe { mem::zeroed() };
-        Ok((
-            schema,
-            UrlTable {
-                base,
-                headers: data_headers,
-                rows: data_rows,
-            },
-        ))
-    }
-
-    fn destroy(&self) -> Result<()> {
-        Ok(())
+        Ok((schema, UrlTable { base, df, headers }))
     }
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
         let mut used_cols = Vec::new();
         let mut used_ops = Vec::new();
 
-        for (i, constraint) in info.constraints().iter_mut().enumerate() {
+        for (_i, constraint) in info.constraints().iter_mut().enumerate() {
             if constraint.usable() {
                 let op = match constraint.op() {
                     Some(ConstraintOperator::EQ) => "=",
@@ -226,7 +241,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                     _ => continue,
                 };
 
-                info.constraints()[i].set_argv_index((used_cols.len() + 1) as i32); // 1-based
+                constraint.set_argv_index((used_cols.len() + 1) as i32); // 1-based
                 used_cols.push(constraint.column_idx());
                 used_ops.push(op);
             }
@@ -246,7 +261,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     }
 
     fn open(&mut self) -> Result<UrlCursor> {
-        Ok(UrlCursor::new(self.rows.clone()))
+        Ok(UrlCursor::new(self.df.clone()))
     }
 }
 
@@ -254,16 +269,16 @@ impl<'vtab> VTab<'vtab> for UrlTable {
 struct UrlCursor {
     base: sqlite3_vtab_cursor,
     row_idx: usize,
-    filtered_rows: Vec<Vec<String>>,
+    filtered_df: DataFrame,
 }
 
 impl UrlCursor {
-    fn new(all_rows: Vec<Vec<String>>) -> UrlCursor {
+    fn new(df: DataFrame) -> UrlCursor {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };
         UrlCursor {
             base,
             row_idx: 0,
-            filtered_rows: all_rows,
+            filtered_df: df,
         }
     }
 }
@@ -276,67 +291,50 @@ impl VTabCursor for UrlCursor {
         args: &[*mut sqlite3_value],
     ) -> Result<()> {
         let vtab: &UrlTable = unsafe { &*(self.base.pVtab as *mut UrlTable) };
-        let mut filtered_rows = vtab.rows.clone();
+        let mut lf = vtab.df.clone().lazy();
 
-        if !args.is_empty() && idx_str.is_some() {
-            let col_ops: Vec<(usize, &str)> = idx_str
-                .unwrap()
-                .split(',')
-                .filter_map(|part| {
-                    let (col_str, op) = if part.ends_with('=') {
-                        part.split_at(part.len() - 1)
-                    } else {
-                        part.split_at(part.len())
-                    };
-                    col_str.parse::<usize>().ok().map(|col| (col, op))
-                })
-                .collect();
+        if let Some(idx_str) = idx_str {
+            for (i, part) in idx_str.split(',').enumerate() {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
 
-            for (i, (col_idx, op)) in col_ops.iter().enumerate() {
+                let (col_str, op) = if trimmed.ends_with('=') {
+                    trimmed.split_at(trimmed.len() - 1)
+                } else {
+                    trimmed.split_at(trimmed.len())
+                };
+
+                if col_str.is_empty() {
+                    continue;
+                }
+
+                let col_idx: usize = match col_str.parse::<usize>() {
+                    Ok(idx) => idx,
+                    Err(_) => continue,
+                };
+
+                let col_name = &vtab.headers[col_idx];
                 let filter_value = api::value_text(&args[i])?;
 
-                filtered_rows = filtered_rows
-                    .into_iter()
-                    .filter(|row| {
-                        let cell_value = row[*col_idx].trim();
+                let filter_expr = match op {
+                    "=" => col(col_name).eq(lit(filter_value)),
+                    ">" => col(col_name).gt(lit(filter_value)),
+                    "<" => col(col_name).lt(lit(filter_value)),
+                    ">=" => col(col_name).gt_eq(lit(filter_value)),
+                    "<=" => col(col_name).lt_eq(lit(filter_value)),
+                    "!" => col(col_name).neq(lit(filter_value)),
+                    _ => continue,
+                };
 
-                        let cell_num = cell_value.parse::<f64>();
-                        let filter_num = filter_value.parse::<f64>();
-
-                        let comparison = if cell_num.is_ok() && filter_num.is_ok() {
-                            let c = cell_num.unwrap();
-                            let f = filter_num.unwrap();
-
-                            // Num comp.
-                            match *op {
-                                "=" => c == f,
-                                ">" => c > f,
-                                "<" => c < f,
-                                ">=" => c >= f,
-                                "<=" => c <= f,
-                                "!" => c != f,
-                                _ => false,
-                            }
-                        } else {
-                            // Text comp.
-                            match *op {
-                                "=" => cell_value == filter_value,
-                                ">" => cell_value > filter_value,
-                                "<" => cell_value < filter_value,
-                                ">=" => cell_value >= filter_value,
-                                "<=" => cell_value <= filter_value,
-                                "!" => cell_value != filter_value,
-                                _ => false,
-                            }
-                        };
-
-                        comparison
-                    })
-                    .collect();
+                lf = lf.filter(filter_expr);
             }
         }
 
-        self.filtered_rows = filtered_rows;
+        self.filtered_df = lf
+            .collect()
+            .map_err(|e| Error::new_message(&format!("Polars collect error: {}", e)))?;
         self.row_idx = 0;
 
         Ok(())
@@ -348,19 +346,29 @@ impl VTabCursor for UrlCursor {
     }
 
     fn eof(&self) -> bool {
-        self.row_idx >= self.filtered_rows.len()
+        self.row_idx >= self.filtered_df.height()
     }
 
-    fn column(&self, context: *mut sqlite3_context, i: c_int) -> Result<()> {
-        if let Some(row) = self.filtered_rows.get(self.row_idx) {
-            if let Some(value) = row.get(i as usize) {
-                api::result_text(context, value)?;
-            } else {
-                api::result_null(context);
-            }
-        } else {
-            api::result_null(context);
+    fn column(&self, ctx: *mut sqlite3_context, i: c_int) -> Result<()> {
+        let col = self
+            .filtered_df
+            .select_at_idx(i as usize)
+            .ok_or_else(|| Error::new_message("Invalid column index"))?;
+        let val = col.get(self.row_idx);
+
+        match val {
+            Ok(AnyValue::Int64(v)) => api::result_int64(ctx, v),
+            Ok(AnyValue::Int32(v)) => api::result_int64(ctx, v as i64),
+            Ok(AnyValue::Float64(v)) => api::result_double(ctx, v),
+            Ok(AnyValue::Float32(v)) => api::result_double(ctx, v as f64),
+            Ok(AnyValue::Boolean(v)) => api::result_int(ctx, if v { 1 } else { 0 }),
+            Ok(AnyValue::String(v)) => api::result_text(ctx, v)?,
+            Ok(AnyValue::StringOwned(v)) => api::result_text(ctx, &v)?,
+            Ok(AnyValue::Null) => api::result_null(ctx),
+            Ok(v) => api::result_text(ctx, &v.to_string())?,
+            Err(_) => api::result_null(ctx),
         }
+
         Ok(())
     }
 
