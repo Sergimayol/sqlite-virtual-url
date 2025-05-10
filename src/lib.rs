@@ -39,6 +39,8 @@ enum VTabDataFormats {
     CSV,
     AVRO,
     PARQUET,
+    JSON,
+    JSONL,
 }
 
 fn get_format(fmt: &str) -> Result<VTabDataFormats> {
@@ -46,6 +48,9 @@ fn get_format(fmt: &str) -> Result<VTabDataFormats> {
         "CSV" => Ok(VTabDataFormats::CSV),
         "AVRO" => Ok(VTabDataFormats::AVRO),
         "PARQUET" => Ok(VTabDataFormats::PARQUET),
+        "JSON" => Ok(VTabDataFormats::JSON),
+        "JSONL" => Ok(VTabDataFormats::JSONL),
+        "NDJSON" => Ok(VTabDataFormats::JSONL),
         _ => Err(Error::new_message(&format!("Unknown data format: {}", fmt))),
     }
 }
@@ -203,7 +208,15 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                 .map_err(|e| Error::new_message(&format!("Parquet parse error: {}", e)))?,
             VTabDataFormats::AVRO => AvroReader::new(resp.as_ref())
                 .finish()
-                .map_err(|e| Error::new_message(&format!("DataFrame build error: {}", e)))?,
+                .map_err(|e| Error::new_message(&format!("Avro build error: {}", e)))?,
+            VTabDataFormats::JSON => JsonReader::new(std::io::Cursor::new(resp))
+                .with_json_format(JsonFormat::Json)
+                .finish()
+                .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
+            VTabDataFormats::JSONL => JsonReader::new(std::io::Cursor::new(resp))
+                .with_json_format(JsonFormat::JsonLines)
+                .finish()
+                .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
         };
 
         let headers = df
@@ -316,15 +329,46 @@ impl VTabCursor for UrlCursor {
                 };
 
                 let col_name = &vtab.headers[col_idx];
-                let filter_value = api::value_text(&args[i])?;
+                let col_type: &DataType = &vtab.df.dtypes()[col_idx];
+                let arg: *mut sqlite3_value = args[i];
+
+                let filter_value = match col_type {
+                    DataType::Boolean => {
+                        let val = api::value_int(&arg);
+                        lit(val != 0)
+                    }
+                    DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64 => {
+                        let val = api::value_int64(&arg);
+                        lit(val)
+                    }
+                    DataType::Float32 | DataType::Float64 => {
+                        let val = api::value_double(&arg);
+                        lit(val)
+                    }
+                    DataType::String => {
+                        let val = api::value_text(&arg)?;
+                        lit(val.to_string())
+                    }
+                    _ => {
+                        let val = api::value_text(&arg)?;
+                        lit(val.to_string())
+                    }
+                };
 
                 let filter_expr = match op {
-                    "=" => col(col_name).eq(lit(filter_value)),
-                    ">" => col(col_name).gt(lit(filter_value)),
-                    "<" => col(col_name).lt(lit(filter_value)),
-                    ">=" => col(col_name).gt_eq(lit(filter_value)),
-                    "<=" => col(col_name).lt_eq(lit(filter_value)),
-                    "!" => col(col_name).neq(lit(filter_value)),
+                    "=" => col(col_name).eq(filter_value),
+                    ">" => col(col_name).gt(filter_value),
+                    "<" => col(col_name).lt(filter_value),
+                    ">=" => col(col_name).gt_eq(filter_value),
+                    "<=" => col(col_name).lt_eq(filter_value),
+                    "!" => col(col_name).neq(filter_value),
                     _ => continue,
                 };
 
