@@ -1,4 +1,10 @@
-use avro_rs::{types::Value, Reader};
+mod args;
+mod avro;
+mod fmt;
+
+use args::parse_args;
+use avro::AvroReader;
+use fmt::{get_format, VTabDataFormats};
 use polars::prelude::*;
 use reqwest::blocking::get;
 use sqlite_loadable::{
@@ -7,153 +13,7 @@ use sqlite_loadable::{
     Result,
 };
 use sqlite_loadable::{prelude::*, Error};
-use std::{collections::HashMap, mem, os::raw::c_int};
-
-#[derive(Debug)]
-struct ParsedArgs {
-    named: HashMap<String, String>,
-    positional: Vec<String>,
-}
-
-fn parse_args(args: Vec<String>) -> ParsedArgs {
-    let mut named = HashMap::new();
-    let mut positional = Vec::new();
-
-    for arg in args {
-        if let Some(eq_pos) = arg.find('=') {
-            let key = arg[..eq_pos].trim().to_string().to_uppercase();
-            let value = arg[eq_pos + 1..]
-                .trim_matches(|c| c == '\'' || c == '"')
-                .to_string();
-            named.insert(key, value);
-        } else {
-            positional.push(arg.trim_matches(|c| c == '\'' || c == '"').to_string());
-        }
-    }
-
-    ParsedArgs { named, positional }
-}
-
-#[derive(Debug)]
-enum VTabDataFormats {
-    CSV,
-    AVRO,
-    PARQUET,
-    JSON,
-    JSONL,
-}
-
-fn get_format(fmt: &str) -> Result<VTabDataFormats> {
-    match fmt.to_uppercase().as_str() {
-        "CSV" => Ok(VTabDataFormats::CSV),
-        "AVRO" => Ok(VTabDataFormats::AVRO),
-        "PARQUET" => Ok(VTabDataFormats::PARQUET),
-        "JSON" => Ok(VTabDataFormats::JSON),
-        "JSONL" => Ok(VTabDataFormats::JSONL),
-        "NDJSON" => Ok(VTabDataFormats::JSONL),
-        _ => Err(Error::new_message(&format!("Unknown data format: {}", fmt))),
-    }
-}
-
-struct AvroReader<'a> {
-    data: &'a [u8],
-}
-
-impl<'a> AvroReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data }
-    }
-
-    fn finish(self) -> PolarsResult<DataFrame> {
-        let reader = Reader::new(self.data).unwrap();
-
-        let mut col_data: HashMap<String, Vec<AnyValue>> = HashMap::new();
-
-        for record in reader {
-            let value = record.unwrap();
-
-            if let Value::Record(fields) = value {
-                for (k, v) in fields {
-                    col_data
-                        .entry(k.clone())
-                        .or_insert_with(Vec::new)
-                        .push(Self::map_value_to_any(v));
-                }
-            }
-        }
-
-        let columns = col_data
-            .into_iter()
-            .map(|(col, values)| Series::new(col.into(), values))
-            .map(|s| Column::new(s.name().clone(), s))
-            .collect::<Vec<_>>();
-
-        DataFrame::new(columns)
-    }
-
-    fn map_value_to_any(value: Value) -> AnyValue<'a> {
-        match value {
-            Value::String(s) => AnyValue::StringOwned(s.into()),
-            Value::Int(i) => AnyValue::Int32(i),
-            Value::Long(l) => AnyValue::Int64(l),
-            Value::Float(f) => AnyValue::Float32(f),
-            Value::Double(d) => AnyValue::Float64(d),
-            Value::Boolean(b) => AnyValue::Boolean(b),
-            Value::Null => AnyValue::Null,
-            Value::Bytes(b) => AnyValue::BinaryOwned(b.into()),
-
-            Value::Date(days) => {
-                let date = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
-                    .unwrap()
-                    .checked_add_days(chrono::Days::new(days as u64));
-                match date {
-                    Some(d) => {
-                        let epoch_days = d
-                            .signed_duration_since(
-                                chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
-                            )
-                            .num_days() as i32;
-                        AnyValue::Date(epoch_days)
-                    }
-                    None => AnyValue::Null,
-                }
-            }
-
-            Value::TimeMillis(ms) => AnyValue::Int32(ms),
-            Value::TimeMicros(us) => AnyValue::Int64(us),
-            Value::TimestampMillis(ms) => AnyValue::Datetime(ms, TimeUnit::Milliseconds, None),
-            Value::TimestampMicros(us) => AnyValue::Datetime(us, TimeUnit::Microseconds, None),
-
-            Value::Uuid(s) => AnyValue::StringOwned(s.to_string().into()),
-            Value::Fixed(_, bytes) => AnyValue::BinaryOwned(bytes.into()),
-            Value::Enum(_, symbol) => AnyValue::StringOwned(symbol.into()),
-
-            Value::Decimal(decimal) => AnyValue::StringOwned(format!("{:?}", decimal).into()),
-
-            Value::Array(arr) => {
-                let repr = format!("{:?}", arr);
-                AnyValue::StringOwned(repr.into())
-            }
-
-            Value::Map(map) => {
-                let repr = format!("{:?}", map);
-                AnyValue::StringOwned(repr.into())
-            }
-
-            Value::Record(fields) => {
-                let repr = format!("{:?}", fields);
-                AnyValue::StringOwned(repr.into())
-            }
-
-            Value::Duration(duration) => {
-                let repr = format!("{:?}", duration.millis());
-                AnyValue::StringOwned(repr.into())
-            }
-
-            Value::Union(boxed_value) => Self::map_value_to_any(*boxed_value),
-        }
-    }
-}
+use std::{mem, os::raw::c_int};
 
 #[repr(C)]
 struct UrlTable {
@@ -172,7 +32,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         vt_args: VTabArguments,
     ) -> Result<(String, Self)> {
         let args = vt_args.arguments;
-        if args.len() < 1 {
+        if args.len() < 2 {
             return Err(Error::new_message("URL argument missing"));
         }
 
@@ -190,7 +50,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             .cloned()
             .or_else(|| parsed_args.positional.get(1).cloned())
             .ok_or_else(|| Error::new_message("No data format specified"))
-            .and_then(|f| get_format(&f))?;
+            .and_then(|f| get_format(&f).map_err(|err| Error::new_message(format!("{}", err))))?;
 
         let resp = get(&url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
