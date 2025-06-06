@@ -2758,6 +2758,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlite-httpfs"
+version = "0.1.0"
+dependencies = [
+ "avro-rs",
+ "chrono",
+ "polars",
+ "reqwest",
+ "sqlite-loadable",
+]
+
+[[package]]
 name = "sqlite-loadable"
 version = "0.0.6-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2779,17 +2790,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "sqlite-virtual-url"
-version = "0.1.0"
-dependencies = [
- "avro-rs",
- "chrono",
- "polars",
- "reqwest",
- "sqlite-loadable",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-# sqlite-virtual-url
+# sqlite-httpfs
 
 SQLite3 extension for querying data directly from a URL.
 
@@ -43,9 +43,9 @@ Run Time: real 0.000 user 0.000106 sys 0.000008
 1. **Load the extension**
 
 ```sql
-SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_url_init');
 -- or
-.load target/release/libsqlite_virtual_url sqlite3_url_init
+.load target/release/libsqlite_httpfs sqlite3_url_init
 ```
 
 2. **Create a virtual table using `url`**
@@ -91,9 +91,9 @@ Run Time: real 0.000 user 0.000106 sys 0.000008
 1. **Load the extension**
 
 ```sql
-SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_url_init');
 -- or
-.load target/release/libsqlite_virtual_url sqlite3_url_init
+.load target/release/libsqlite_httpfs sqlite3_url_init
 ```
 
 2. **Create a virtual table using `url`**
@@ -116,9 +116,9 @@ SELECT * FROM avro_demo LIMIT 5;
 1. **Load the extension**
 
 ```sql
-SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_url_init');
 -- or
-.load target/release/libsqlite_virtual_url sqlite3_url_init
+.load target/release/libsqlite_httpfs sqlite3_url_init
 ```
 
 2. **Create a virtual table using `url`**

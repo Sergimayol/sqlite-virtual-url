@@ -3,7 +3,7 @@
 .header on
 .mode box
 
-SELECT load_extension('./target/release/libsqlite_virtual_url', 'sqlite3_url_init');
+SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_url_init');
 
 CREATE VIRTUAL TABLE demo2 USING URL(
     url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/oil-and-gas.parquet',
