@@ -282,5 +282,6 @@ impl VTabCursor for UrlCursor {
 #[sqlite_entrypoint]
 pub fn sqlite3_url_init(db: *mut sqlite3) -> Result<()> {
     define_virtual_table::<UrlTable>(db, "url", None)?;
+    define_virtual_table::<UrlTable>(db, "httpfs", None)?;
     Ok(())
 }
