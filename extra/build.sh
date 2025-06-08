@@ -1,0 +1,1 @@
+gcc -fPIC -shared -o memstat.so memstat.c

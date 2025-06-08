@@ -1,6 +1,7 @@
 mod args;
 mod avro;
 mod fmt;
+mod storage;
 
 use args::parse_args;
 use avro::AvroReader;
@@ -15,6 +16,8 @@ use sqlite_loadable::{
 use sqlite_loadable::{prelude::*, Error};
 use std::{mem, os::raw::c_int};
 
+use storage::{df_dtype_to_sqlite_dtype, get_storage, Statement, StorageOpts};
+
 #[repr(C)]
 struct UrlTable {
     base: sqlite3_vtab,
@@ -27,13 +30,13 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     type Cursor = UrlCursor;
 
     fn connect(
-        _db: *mut sqlite3,
+        db: *mut sqlite3,
         _aux: Option<&Self::Aux>,
         vt_args: VTabArguments,
     ) -> Result<(String, Self)> {
         let args = vt_args.arguments;
         if args.len() < 2 {
-            return Err(Error::new_message("URL argument missing"));
+            return Err(Error::new_message("URL and FORMAT args must be provided"));
         }
 
         let parsed_args = parse_args(args);
@@ -51,6 +54,15 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             .or_else(|| parsed_args.positional.get(1).cloned())
             .ok_or_else(|| Error::new_message("No data format specified"))
             .and_then(|f| get_format(&f).map_err(|err| Error::new_message(format!("{}", err))))?;
+
+        let storage = parsed_args
+            .named
+            .get("STORAGE")
+            .or_else(|| parsed_args.positional.get(3))
+            .map_or_else(
+                || Ok(StorageOpts::SQLITE),
+                |opt| get_storage(opt).map_err(|err| Error::new_message(format!("{}", err))),
+            )?;
 
         let resp = get(&url)
             .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
@@ -83,14 +95,40 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             .map(|s| s.to_string())
             .collect();
 
-        let schema = format!(
-            "CREATE TABLE x({});",
-            df.get_column_names()
-                .iter()
-                .map(|h| format!("\"{}\"", h))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let columun_types = df
+            .dtypes()
+            .into_iter()
+            .map(|col_dtype| df_dtype_to_sqlite_dtype(&col_dtype).as_str())
+            .collect::<Vec<&str>>();
+
+        let columns_def = df
+            .get_column_names()
+            .iter()
+            .zip(columun_types.iter())
+            .map(|(name, ty)| format!("\"{}\" {}", name, ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let schema = format!("CREATE TABLE x({});", columns_def);
+        println!("SCHEMA {}", schema);
+
+        if storage == StorageOpts::SQLITE {
+            // TODO: Need to know if it's isCreate or not
+            // - isCreate == True when xCreate
+            // - isCreate == False when xConnect
+            // If isCreate then create shadow tables else already created
+            let data_schema = format!(
+                "CREATE TABLE \"{}.{}_data\" ({});",
+                vt_args.module_name, vt_args.table_name, columns_def
+            );
+
+            Statement::build(db, &data_schema)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+        }
 
         let base: sqlite3_vtab = unsafe { mem::zeroed() };
         Ok((schema, UrlTable { base, df, headers }))
@@ -280,8 +318,14 @@ impl VTabCursor for UrlCursor {
 }
 
 #[sqlite_entrypoint]
-pub fn sqlite3_url_init(db: *mut sqlite3) -> Result<()> {
-    define_virtual_table::<UrlTable>(db, "url", None)?;
+pub fn sqlite3_httpfs_init(db: *mut sqlite3) -> Result<()> {
+    // TODO: Add support for something like:
+    // CREATE VIRTUAL TABLE demo USING
+    // HTTPFS (
+    //    URL='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
+    //    FORMAT='csv',
+    //    STORAGE='MEM' -- OR by default SQLITE
+    // );
     define_virtual_table::<UrlTable>(db, "httpfs", None)?;
     Ok(())
 }

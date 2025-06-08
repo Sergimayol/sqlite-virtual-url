@@ -1,0 +1,19 @@
+SELECT
+    load_extension (
+        './target/release/libsqlite_httpfs',
+        'sqlite3_httpfs_init'
+    );
+
+CREATE VIRTUAL TABLE demo USING HTTPFS (
+    URL='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
+    FORMAT='csv',
+    STORAGE='SQLITE'
+);
+
+
+.bail on
+.header on
+.mode box
+.timer on
+
+SELECT * FROM demo LIMIT 2;
