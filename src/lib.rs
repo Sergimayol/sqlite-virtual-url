@@ -94,7 +94,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             .get_column_names_owned()
             .into_iter()
             .map(|s| s.to_string())
-            .collect();
+            .collect::<Vec<String>>();
 
         let columns_types = df
             .dtypes()
@@ -122,8 +122,36 @@ impl<'vtab> VTab<'vtab> for UrlTable {
                 "CREATE TABLE \"{}.{}_data\" ({});",
                 vt_args.module_name, vt_args.table_name, columns_def
             );
-
             Statement::build(db, &data_schema)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+
+            let metadata_schema = format!(
+                "CREATE TABLE \"{}.{}_metadata\" (URL TEXT, FORMAT TEXT, HEADERS TEXT, COLUMN_TYPES TEXT);",
+                vt_args.module_name, vt_args.table_name
+            );
+            Statement::build(db, &metadata_schema)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+
+            let metadata_data= format!(
+                "INSERT INTO\"{}.{}_metadata\" (URL, FORMAT, HEADERS, COLUMN_TYPES) VALUES ('{}', '{}', '{}', '{}')",
+                vt_args.module_name,
+                vt_args.table_name,
+                url,
+                format.as_str(),
+                headers.join(", "),
+                columns_types.join(", ")
+            );
+            println!("DATA: {}", metadata_data);
+
+            Statement::build(db, &metadata_data)
                 .map_err(|e| Error::new_message(e.to_string()))?
                 .execute()
                 .map_err(|e| Error::new_message(e.to_string()))?

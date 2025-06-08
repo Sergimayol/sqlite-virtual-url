@@ -1,5 +1,9 @@
-use std::{error::Error, ffi::CString};
+use std::{
+    error::Error,
+    ffi::{CStr, CString},
+};
 
+use libsqlite3_sys::sqlite3_errstr;
 use polars::prelude::DataType;
 use sqlite_loadable::{
     ext::{sqlite3, sqlite3_stmt, sqlite3ext_finalize, sqlite3ext_prepare_v2, sqlite3ext_step},
@@ -77,7 +81,6 @@ pub struct Statement {
     raw: *mut sqlite3_stmt,
     finalized: bool,
 }
-
 impl Statement {
     pub fn build(db: *mut sqlite3, sql: &str) -> SqliteResult<Self> {
         let sql_c = CString::new(sql)?;
@@ -86,7 +89,11 @@ impl Statement {
             sqlite3ext_prepare_v2(db, sql_c.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
         };
         if rc != 0 {
-            Err(format!("Error building statement. Error code: {}", rc).into())
+            let err_msg = unsafe {
+                let c_str = sqlite3_errstr(rc);
+                CStr::from_ptr(c_str).to_string_lossy().into_owned()
+            };
+            Err(format!("Error building statement. (code: {rc}): {err_msg}").into())
         } else {
             Ok(Self {
                 raw: stmt,
@@ -98,7 +105,11 @@ impl Statement {
     pub fn execute(self) -> SqliteResult<Self> {
         let rc = unsafe { sqlite3ext_step(self.raw) };
         if rc != SQLITE_DONE && rc != SQLITE_ROW {
-            Err(format!("Error executing statement. Error code: {}", rc).into())
+            let err_msg = unsafe {
+                let c_str = sqlite3_errstr(rc);
+                CStr::from_ptr(c_str).to_string_lossy().into_owned()
+            };
+            Err(format!("Error executing statement (code: {rc}): {err_msg}").into())
         } else {
             Ok(self)
         }
@@ -112,7 +123,11 @@ impl Statement {
         self.finalized = true;
         std::mem::forget(self);
         if rc != 0 {
-            Err(format!("Error finalizing statement. Error code {}", rc).into())
+            let err_msg = unsafe {
+                let c_str = sqlite3_errstr(rc);
+                CStr::from_ptr(c_str).to_string_lossy().into_owned()
+            };
+            Err(format!("Error finalizing statement(code: {rc}): {err_msg}").into())
         } else {
             Ok(())
         }

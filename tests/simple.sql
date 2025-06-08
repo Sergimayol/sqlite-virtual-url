@@ -6,10 +6,9 @@ SELECT
 
 CREATE VIRTUAL TABLE demo USING HTTPFS (
     URL='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
-    FORMAT='csv',
+    FORMAT='CSV',
     STORAGE='SQLITE'
 );
-
 
 .bail on
 .header on
@@ -17,3 +16,8 @@ CREATE VIRTUAL TABLE demo USING HTTPFS (
 .timer on
 
 SELECT * FROM demo LIMIT 2;
+
+.schema
+
+SELECT * FROM "HTTPFS.demo_data" LIMIT 2;
+SELECT * FROM "HTTPFS.demo_metadata";
