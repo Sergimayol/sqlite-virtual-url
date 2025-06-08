@@ -23,6 +23,7 @@ struct UrlTable {
     base: sqlite3_vtab,
     df: DataFrame,
     headers: Vec<String>,
+    columns_types: Vec<String>,
 }
 
 impl<'vtab> VTab<'vtab> for UrlTable {
@@ -95,16 +96,16 @@ impl<'vtab> VTab<'vtab> for UrlTable {
             .map(|s| s.to_string())
             .collect();
 
-        let columun_types = df
+        let columns_types = df
             .dtypes()
             .into_iter()
-            .map(|col_dtype| df_dtype_to_sqlite_dtype(&col_dtype).as_str())
-            .collect::<Vec<&str>>();
+            .map(|col_dtype| df_dtype_to_sqlite_dtype(&col_dtype).as_str().to_string())
+            .collect::<Vec<String>>();
 
         let columns_def = df
             .get_column_names()
             .iter()
-            .zip(columun_types.iter())
+            .zip(columns_types.iter())
             .map(|(name, ty)| format!("\"{}\" {}", name, ty))
             .collect::<Vec<_>>()
             .join(", ");
@@ -131,7 +132,15 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         }
 
         let base: sqlite3_vtab = unsafe { mem::zeroed() };
-        Ok((schema, UrlTable { base, df, headers }))
+        Ok((
+            schema,
+            UrlTable {
+                base,
+                df,
+                headers,
+                columns_types,
+            },
+        ))
     }
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
