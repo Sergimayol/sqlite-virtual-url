@@ -6,7 +6,10 @@ use std::{
 use libsqlite3_sys::sqlite3_errstr;
 use polars::prelude::DataType;
 use sqlite_loadable::{
-    ext::{sqlite3, sqlite3_stmt, sqlite3ext_finalize, sqlite3ext_prepare_v2, sqlite3ext_step},
+    ext::{
+        sqlite3, sqlite3_stmt, sqlite3ext_column_text, sqlite3ext_finalize, sqlite3ext_prepare_v2,
+        sqlite3ext_step,
+    },
     SQLITE_DONE, SQLITE_ROW,
 };
 
@@ -25,11 +28,6 @@ pub fn get_storage(storage: &str) -> Result<StorageOpts, Box<dyn Error>> {
 }
 
 /// https://sqlite.org/c3ref/column_blob.html
-/// - sqlite3_column_blob
-/// - sqlite3_column_double
-/// - sqlite3_column_int
-/// - sqlite3_column_int64
-/// - sqlite3_column_text
 pub enum SQLiteDataTypes {
     BLOB,
     REAL,
@@ -113,6 +111,39 @@ impl Statement {
         } else {
             Ok(self)
         }
+    }
+
+    pub fn fetch(self, col_count: i32) -> SqliteResult<Vec<Vec<String>>> {
+        let mut results = Vec::new();
+
+        loop {
+            let rc = unsafe { sqlite3ext_step(self.raw) };
+
+            if rc == SQLITE_DONE {
+                break;
+            } else if rc != SQLITE_ROW {
+                let err_msg = unsafe {
+                    let c_str = sqlite3_errstr(rc);
+                    CStr::from_ptr(c_str).to_string_lossy().into_owned()
+                };
+                return Err(format!("Error fetching row (code: {rc}): {err_msg}").into());
+            }
+
+            let mut row = Vec::new();
+            for i in 0..col_count {
+                let text_ptr = unsafe { sqlite3ext_column_text(self.raw, i) };
+                if text_ptr.is_null() {
+                    row.push("NULL".to_string());
+                } else {
+                    let c_str = unsafe { CStr::from_ptr(text_ptr as *const i8) };
+                    row.push(c_str.to_string_lossy().into_owned());
+                }
+            }
+
+            results.push(row);
+        }
+
+        Ok(results)
     }
 
     pub fn finalize(mut self) -> SqliteResult<()> {
