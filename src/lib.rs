@@ -261,7 +261,6 @@ impl UrlTable {
             .fetch(1)
             .map_err(|e| Error::new_message(e.to_string()))?;
 
-        println!("RESULTS {:#?}", results);
         Ok(results.len() > 0)
     }
 

@@ -5,9 +5,9 @@ SELECT
     );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS demo USING HTTPFS (
-    URL='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
-    FORMAT='CSV',
-    STORAGE='SQLITE'
+    URL = 'https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
+    FORMAT = 'CSV',
+    STORAGE = 'SQLITE'
 );
 
 .bail on
