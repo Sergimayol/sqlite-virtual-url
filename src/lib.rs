@@ -5,6 +5,7 @@ mod storage;
 
 use args::parse_args;
 use avro::AvroReader;
+use chrono::{DateTime, NaiveDate};
 use fmt::{get_format, VTabDataFormats};
 use polars::prelude::*;
 use reqwest::blocking::get;
@@ -103,7 +104,7 @@ impl UrlTable {
                 .map_err(|e| Error::new_message(e.to_string()))?;
             let raw_headers = results.get(0).and_then(|row| row.get(0));
             let headers: Vec<&str> = match raw_headers {
-                Some(h) => h.split(", ").collect(),
+                Some(h) => Self::split_csv_line(h),
                 None => todo!("Internal bug"),
             };
 
@@ -153,12 +154,19 @@ impl UrlTable {
                 .finalize()
                 .map_err(|e| Error::new_message(e.to_string()))?;
 
+            let parsed_headers = headers
+                .clone()
+                .into_iter()
+                .map(|name| format!("\"{}\"", name))
+                .collect::<Vec<_>>()
+                .join(", ");
+
             let batch_size = 1_000;
             let data_data = Self::insert_dataframe_in_batches(
                 &df,
                 &vt_args.module_name,
                 &vt_args.table_name,
-                headers.join(", "),
+                parsed_headers.clone(),
                 batch_size,
             );
 
@@ -182,13 +190,13 @@ impl UrlTable {
                 .finalize()
                 .map_err(|e| Error::new_message(e.to_string()))?;
 
-            let metadata_data= format!(
+            let metadata_data = format!(
                 "INSERT INTO\"{}.{}_metadata\" (URL, FORMAT, HEADERS, COLUMN_TYPES) VALUES ('{}', '{}', '{}', '{}');",
                 vt_args.module_name,
                 vt_args.table_name,
                 url,
                 format.as_str(),
-                headers.join(", "),
+                parsed_headers.clone(),
                 columns_types.join(", ")
             );
 
@@ -264,6 +272,81 @@ impl UrlTable {
         Ok(results.len() > 0)
     }
 
+    fn split_csv_line<'a>(line: &'a str) -> Vec<&'a str> {
+        let mut result = Vec::new();
+        let mut start = 0;
+        let mut in_quotes = false;
+        let mut i = 0;
+        let bytes = line.as_bytes();
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    in_quotes = !in_quotes;
+                    i += 1;
+                }
+                b',' if !in_quotes => {
+                    let field = &line[start..i].trim();
+                    result.push(Self::trim_quotes(field));
+                    i += 1;
+                    start = i;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        if start < line.len() {
+            let field = &line[start..].trim();
+            result.push(Self::trim_quotes(field));
+        }
+
+        result
+    }
+
+    fn trim_quotes(s: &str) -> &str {
+        let s = s.trim();
+        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+            &s[1..s.len() - 1]
+        } else {
+            s
+        }
+    }
+
+    fn escape_sql_string(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    fn format_sql_value(val: AnyValue) -> String {
+        match val {
+            AnyValue::Null => "NULL".to_string(),
+            AnyValue::String(s) => format!("'{}'", Self::escape_sql_string(s)),
+            AnyValue::Boolean(b) => (if b { "1" } else { "0" }).to_string(),
+            AnyValue::Int8(i) => i.to_string(),
+            AnyValue::Int16(i) => i.to_string(),
+            AnyValue::Int32(i) => i.to_string(),
+            AnyValue::Int64(i) => i.to_string(),
+            AnyValue::UInt8(i) => i.to_string(),
+            AnyValue::UInt16(i) => i.to_string(),
+            AnyValue::UInt32(i) => i.to_string(),
+            AnyValue::UInt64(i) => i.to_string(),
+            AnyValue::Float32(f) => f.to_string(),
+            AnyValue::Float64(f) => f.to_string(),
+            AnyValue::Date(i) => {
+                let date = NaiveDate::from_num_days_from_ce_opt(i)
+                    .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                format!("'{}'", date)
+            }
+            AnyValue::Datetime(ms, _, _) => {
+                let dt = DateTime::from_timestamp_millis(ms)
+                    .unwrap_or(DateTime::from_timestamp(0, 0).unwrap());
+                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S"))
+            }
+            other => format!("'{}'", Self::escape_sql_string(&other.to_string())),
+        }
+    }
+
     fn insert_dataframe_in_batches(
         df: &DataFrame,
         module_name: &str,
@@ -279,20 +362,17 @@ impl UrlTable {
             let mut values_sql = Vec::new();
 
             for row_idx in batch_start..batch_end {
-                let mut row_values = Vec::new();
-                for series in df.get_columns() {
-                    let val = series.get(row_idx);
-                    let val_str = match val {
-                        Ok(v) => match v {
-                            AnyValue::Null => "NULL".to_string(),
-                            AnyValue::String(s) => format!("'{}'", s.replace('\'', "''")),
-                            AnyValue::Boolean(b) => (if b { "1" } else { "0" }).to_string(),
-                            other => other.to_string(),
-                        },
-                        Err(_) => todo!("Unhandled data type: {:?}", val),
-                    };
-                    row_values.push(val_str);
-                }
+                let row_values: Vec<String> = df
+                    .get_columns()
+                    .iter()
+                    .map(|series| {
+                        match series.get(row_idx) {
+                            Ok(val) => Self::format_sql_value(val),
+                            Err(_) => "NULL".to_string(), // fallback
+                        }
+                    })
+                    .collect();
+
                 values_sql.push(format!("({})", row_values.join(", ")));
             }
 

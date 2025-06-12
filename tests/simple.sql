@@ -4,7 +4,7 @@ SELECT
         'sqlite3_httpfs_init'
     );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS demo USING HTTPFS (
+CREATE VIRTUAL TABLE IF NOT EXISTS simple_demo USING HTTPFS (
     URL = 'https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
     FORMAT = 'CSV',
     STORAGE = 'SQLITE'
@@ -16,7 +16,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS demo USING HTTPFS (
 .timer on
 .echo on
 
-SELECT * FROM demo LIMIT 2;
+SELECT * FROM simple_demo LIMIT 2;
 
 .schema
 
