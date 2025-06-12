@@ -92,9 +92,8 @@ impl UrlTable {
                     .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
             }
         } else {
-            todo!("TODO: Recover from db");
             let metadata_sql = format!(
-                "SELECT HEADERS_SIZE FROM \"{}.{}_metadata\";",
+                "SELECT HEADERS FROM \"{}.{}_metadata\";",
                 vt_args.module_name, vt_args.table_name
             );
             let stmt = Statement::build(db, &metadata_sql)
@@ -112,8 +111,8 @@ impl UrlTable {
                 "SELECT * FROM  \"{}.{}_data\";",
                 vt_args.module_name, vt_args.table_name
             );
-            let stmt = Statement::build(db, &metadata_sql)
-                .map_err(|e| Error::new_message(e.to_string()))?;
+            let stmt =
+                Statement::build(db, &data_sql).map_err(|e| Error::new_message(e.to_string()))?;
             let results = stmt
                 .fetch(headers.len().try_into().unwrap())
                 .map_err(|e| Error::new_message(e.to_string()))?;
