@@ -28,6 +28,7 @@ pub fn get_storage(storage: &str) -> Result<StorageOpts, Box<dyn Error>> {
 }
 
 /// https://sqlite.org/c3ref/column_blob.html
+#[derive(Debug, PartialEq)]
 pub enum SQLiteDataTypes {
     BLOB,
     REAL,
@@ -178,6 +179,8 @@ impl Drop for Statement {
 
 #[cfg(test)]
 mod tests {
+    use polars::prelude::TimeUnit;
+
     use super::*;
 
     #[test]
@@ -246,5 +249,85 @@ mod tests {
     fn test_get_storage_with_carriage_return() {
         let result = get_storage("MEM\r\n");
         assert_eq!(result.unwrap(), StorageOpts::MEM);
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_int() {
+        let int_types = vec![
+            DataType::UInt8,
+            DataType::UInt16,
+            DataType::UInt32,
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::UInt64,
+            DataType::Int128,
+        ];
+        for dt in int_types {
+            assert_eq!(df_dtype_to_sqlite_dtype(&dt), SQLiteDataTypes::INT);
+        }
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_real() {
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Float32),
+            SQLiteDataTypes::REAL
+        );
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Float64),
+            SQLiteDataTypes::REAL
+        );
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_text() {
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::String),
+            SQLiteDataTypes::TEXT
+        );
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_null() {
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Null),
+            SQLiteDataTypes::NULL
+        );
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_blob() {
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Binary),
+            SQLiteDataTypes::BLOB
+        );
+    }
+
+    #[test]
+    fn test_df_dtype_to_sqlite_dtype_numeric() {
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Boolean),
+            SQLiteDataTypes::NUMERIC
+        );
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Datetime(TimeUnit::Milliseconds, None)),
+            SQLiteDataTypes::NUMERIC
+        );
+        assert_eq!(
+            df_dtype_to_sqlite_dtype(&DataType::Date),
+            SQLiteDataTypes::NUMERIC
+        );
+    }
+
+    #[test]
+    fn test_sqlite_data_type_as_str() {
+        assert_eq!(SQLiteDataTypes::BLOB.as_str(), "BLOB");
+        assert_eq!(SQLiteDataTypes::REAL.as_str(), "REAL");
+        assert_eq!(SQLiteDataTypes::INT.as_str(), "INTEGER");
+        assert_eq!(SQLiteDataTypes::TEXT.as_str(), "TEXT");
+        assert_eq!(SQLiteDataTypes::NULL.as_str(), "NULL");
+        assert_eq!(SQLiteDataTypes::NUMERIC.as_str(), "NUMERIC");
     }
 }
