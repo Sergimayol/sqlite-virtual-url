@@ -3,9 +3,9 @@
 .header on
 .mode box
 
-SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_url_init');
+SELECT load_extension('./target/release/libsqlite_httpfs', 'sqlite3_httpfs_init');
 
-CREATE VIRTUAL TABLE demo USING URL('https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv', 'csv');
+CREATE VIRTUAL TABLE IF NOT EXISTS demo USING HTTPFS('https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv', 'csv');
 
 .timer on
 SELECT * FROM demo LIMIT 1;
@@ -18,6 +18,6 @@ SELECT name FROM demo WHERE name != 'Logan' LIMIT 5;
 SELECT COUNT(*) as total_cities FROM demo WHERE pop > 1000000;
 
 .timer off
-CREATE VIRTUAL TABLE demo2 USING URL(url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv', format='csv');
+CREATE VIRTUAL TABLE IF NOT EXISTS demo2 USING HTTPFS(url='https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv', format='csv');
 .timer on
 SELECT AVG(pop) as avg_pop FROM demo2;

@@ -9,6 +9,18 @@ pub enum VTabDataFormats {
     JSONL,
 }
 
+impl VTabDataFormats {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VTabDataFormats::CSV => "CSV",
+            VTabDataFormats::AVRO => "AVRO",
+            VTabDataFormats::PARQUET => "PARQUET",
+            VTabDataFormats::JSON => "JSON",
+            VTabDataFormats::JSONL => "JSONL",
+        }
+    }
+}
+
 pub fn get_format(fmt: &str) -> Result<VTabDataFormats, Box<dyn Error>> {
     match fmt.to_uppercase().as_str() {
         "CSV" => Ok(VTabDataFormats::CSV),

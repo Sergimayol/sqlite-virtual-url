@@ -1,9 +1,11 @@
 mod args;
 mod avro;
 mod fmt;
+mod storage;
 
 use args::parse_args;
 use avro::AvroReader;
+use chrono::{DateTime, NaiveDate};
 use fmt::{get_format, VTabDataFormats};
 use polars::prelude::*;
 use reqwest::blocking::get;
@@ -15,85 +17,397 @@ use sqlite_loadable::{
 use sqlite_loadable::{prelude::*, Error};
 use std::{mem, os::raw::c_int};
 
+use storage::{df_dtype_to_sqlite_dtype, get_storage, Statement, StorageOpts};
+
 #[repr(C)]
 struct UrlTable {
     base: sqlite3_vtab,
     df: DataFrame,
     headers: Vec<String>,
+    columns_types: Vec<String>,
 }
 
-impl<'vtab> VTab<'vtab> for UrlTable {
-    type Aux = ();
-    type Cursor = UrlCursor;
-
-    fn connect(
-        _db: *mut sqlite3,
-        _aux: Option<&Self::Aux>,
+impl UrlTable {
+    fn init(
+        db: *mut sqlite3,
+        _aux: Option<&<UrlTable as VTab>::Aux>,
         vt_args: VTabArguments,
+        is_created: bool,
     ) -> Result<(String, Self)> {
         let args = vt_args.arguments;
         if args.len() < 2 {
-            return Err(Error::new_message("URL argument missing"));
+            return Err(Error::new_message("URL and FORMAT args must be provided"));
         }
 
         let parsed_args = parse_args(args);
         let url = parsed_args
             .named
             .get("URL")
-            .cloned()
-            .or_else(|| parsed_args.positional.get(0).cloned())
+            .or_else(|| parsed_args.positional.get(0))
             .ok_or_else(|| Error::new_message("No URL provided"))?;
 
         let format = parsed_args
             .named
             .get("FORMAT")
-            .cloned()
-            .or_else(|| parsed_args.positional.get(1).cloned())
+            .or_else(|| parsed_args.positional.get(1))
             .ok_or_else(|| Error::new_message("No data format specified"))
             .and_then(|f| get_format(&f).map_err(|err| Error::new_message(format!("{}", err))))?;
 
-        let resp = get(&url)
-            .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
-            .bytes()
-            .map_err(|e| Error::new_message(&format!("Read error: {}", e)))?;
+        let storage = parsed_args
+            .named
+            .get("STORAGE")
+            .or_else(|| parsed_args.positional.get(2))
+            .map_or_else(
+                || Ok(StorageOpts::SQLITE),
+                |opt| get_storage(opt).map_err(|err| Error::new_message(format!("{}", err))),
+            )?;
 
-        let df = match format {
-            VTabDataFormats::CSV => CsvReader::new(std::io::Cursor::new(resp))
-                .finish()
-                .map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?,
-            VTabDataFormats::PARQUET => ParquetReader::new(std::io::Cursor::new(resp))
-                .finish()
-                .map_err(|e| Error::new_message(&format!("Parquet parse error: {}", e)))?,
-            VTabDataFormats::AVRO => AvroReader::new(resp.as_ref())
-                .finish()
-                .map_err(|e| Error::new_message(&format!("Avro build error: {}", e)))?,
-            VTabDataFormats::JSON => JsonReader::new(std::io::Cursor::new(resp))
-                .with_json_format(JsonFormat::Json)
-                .finish()
-                .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
-            VTabDataFormats::JSONL => JsonReader::new(std::io::Cursor::new(resp))
-                .with_json_format(JsonFormat::JsonLines)
-                .finish()
-                .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
+        let t_name = format!(
+            "\"{}.{}_metadata\"",
+            vt_args.module_name, vt_args.table_name
+        );
+        let fetch_data = is_created && !Self::has_metadata(db, &t_name)?;
+        let df = if fetch_data {
+            let resp = get(url)
+                .map_err(|e| Error::new_message(&format!("HTTP error: {}", e)))?
+                .bytes()
+                .map_err(|e| Error::new_message(&format!("Read error: {}", e)))?;
+
+            match format {
+                VTabDataFormats::CSV => CsvReader::new(std::io::Cursor::new(resp))
+                    .finish()
+                    .map_err(|e| Error::new_message(&format!("CSV parse error: {}", e)))?,
+                VTabDataFormats::PARQUET => ParquetReader::new(std::io::Cursor::new(resp))
+                    .finish()
+                    .map_err(|e| Error::new_message(&format!("Parquet parse error: {}", e)))?,
+                VTabDataFormats::AVRO => AvroReader::new(resp.as_ref())
+                    .finish()
+                    .map_err(|e| Error::new_message(&format!("Avro build error: {}", e)))?,
+                VTabDataFormats::JSON => JsonReader::new(std::io::Cursor::new(resp))
+                    .with_json_format(JsonFormat::Json)
+                    .finish()
+                    .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
+                VTabDataFormats::JSONL => JsonReader::new(std::io::Cursor::new(resp))
+                    .with_json_format(JsonFormat::JsonLines)
+                    .finish()
+                    .map_err(|e| Error::new_message(&format!("JSON build error: {}", e)))?,
+            }
+        } else {
+            let metadata_sql = format!(
+                "SELECT HEADERS FROM \"{}.{}_metadata\";",
+                vt_args.module_name, vt_args.table_name
+            );
+            let stmt = Statement::build(db, &metadata_sql)
+                .map_err(|e| Error::new_message(e.to_string()))?;
+            let results = stmt
+                .fetch(1)
+                .map_err(|e| Error::new_message(e.to_string()))?;
+            let raw_headers = results.get(0).and_then(|row| row.get(0));
+            let headers: Vec<&str> = match raw_headers {
+                Some(h) => Self::split_csv_line(h),
+                None => todo!("Internal bug"),
+            };
+
+            let data_sql = format!(
+                "SELECT * FROM  \"{}.{}_data\";",
+                vt_args.module_name, vt_args.table_name
+            );
+            let stmt =
+                Statement::build(db, &data_sql).map_err(|e| Error::new_message(e.to_string()))?;
+            let results = stmt
+                .fetch(headers.len().try_into().unwrap())
+                .map_err(|e| Error::new_message(e.to_string()))?;
+
+            Self::dataframe_from_rows(results, Some(headers))
+                .map_err(|e| Error::new_message(e.to_string()))?
         };
 
         let headers = df
             .get_column_names_owned()
             .into_iter()
             .map(|s| s.to_string())
+            .collect::<Vec<String>>();
+
+        let columns_types = df
+            .dtypes()
+            .into_iter()
+            .map(|col_dtype| df_dtype_to_sqlite_dtype(&col_dtype).as_str().to_string())
+            .collect::<Vec<String>>();
+
+        let columns_def = df
+            .get_column_names()
+            .iter()
+            .zip(columns_types.iter())
+            .map(|(name, ty)| format!("\"{}\" {}", name, ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        if storage == StorageOpts::SQLITE && is_created {
+            let data_schema = format!(
+                "CREATE TABLE \"{}.{}_data\" ({});",
+                vt_args.module_name, vt_args.table_name, columns_def
+            );
+            Statement::build(db, &data_schema)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+
+            let parsed_headers = headers
+                .clone()
+                .into_iter()
+                .map(|name| format!("\"{}\"", name))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let batch_size = 1_000;
+            let data_data = Self::insert_dataframe_in_batches(
+                &df,
+                &vt_args.module_name,
+                &vt_args.table_name,
+                parsed_headers.clone(),
+                batch_size,
+            );
+
+            for data in data_data {
+                Statement::build(db, &data)
+                    .map_err(|e| Error::new_message(e.to_string()))?
+                    .execute()
+                    .map_err(|e| Error::new_message(e.to_string()))?
+                    .finalize()
+                    .map_err(|e| Error::new_message(e.to_string()))?;
+            }
+
+            let metadata_schema = format!(
+                "CREATE TABLE \"{}.{}_metadata\" (URL TEXT, FORMAT TEXT, HEADERS TEXT, COLUMN_TYPES TEXT);",
+                vt_args.module_name, vt_args.table_name
+            );
+            Statement::build(db, &metadata_schema)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+
+            let metadata_data = format!(
+                "INSERT INTO\"{}.{}_metadata\" (URL, FORMAT, HEADERS, COLUMN_TYPES) VALUES ('{}', '{}', '{}', '{}');",
+                vt_args.module_name,
+                vt_args.table_name,
+                url,
+                format.as_str(),
+                parsed_headers.clone(),
+                columns_types.join(", ")
+            );
+
+            Statement::build(db, &metadata_data)
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .execute()
+                .map_err(|e| Error::new_message(e.to_string()))?
+                .finalize()
+                .map_err(|e| Error::new_message(e.to_string()))?;
+        }
+
+        let schema = format!("CREATE TABLE x({});", columns_def);
+        let base: sqlite3_vtab = unsafe { mem::zeroed() };
+        Ok((
+            schema,
+            UrlTable {
+                base,
+                df,
+                headers,
+                columns_types,
+            },
+        ))
+    }
+
+    fn dataframe_from_rows(
+        data: Vec<Vec<String>>,
+        headers: Option<Vec<&str>>,
+    ) -> PolarsResult<DataFrame> {
+        if data.is_empty() {
+            return Err(PolarsError::NoData("No rows provided".into()));
+        }
+
+        let num_cols = data[0].len();
+
+        if !data.iter().all(|row| row.len() == num_cols) {
+            return Err(PolarsError::ShapeMismatch(
+                "Inconsistent row lengths".into(),
+            ));
+        }
+
+        let columns: Vec<Vec<String>> = (0..num_cols)
+            .map(|i| data.iter().map(|row| row[i].clone()).collect())
             .collect();
 
-        let schema = format!(
-            "CREATE TABLE x({});",
-            df.get_column_names()
-                .iter()
-                .map(|h| format!("\"{}\"", h))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let columns: Vec<Column> = columns
+            .into_iter()
+            .enumerate()
+            .map(|(i, col_values)| {
+                let name: String = headers
+                    .as_ref()
+                    .and_then(|h| h.get(i).copied())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("column_{}", i));
 
-        let base: sqlite3_vtab = unsafe { mem::zeroed() };
-        Ok((schema, UrlTable { base, df, headers }))
+                let series = Series::new((&name).into(), col_values);
+                Column::new(series.name().clone(), series)
+            })
+            .collect();
+
+        DataFrame::new(columns)
+    }
+
+    fn has_metadata(db: *mut sqlite3, table_name: &str) -> Result<bool> {
+        let sql = format!(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '{}';",
+            table_name
+        );
+        let stmt = Statement::build(db, &sql).map_err(|e| Error::new_message(e.to_string()))?;
+        let results = stmt
+            .fetch(1)
+            .map_err(|e| Error::new_message(e.to_string()))?;
+
+        Ok(results.len() > 0)
+    }
+
+    fn split_csv_line<'a>(line: &'a str) -> Vec<&'a str> {
+        let mut result = Vec::new();
+        let mut start = 0;
+        let mut in_quotes = false;
+        let mut i = 0;
+        let bytes = line.as_bytes();
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    in_quotes = !in_quotes;
+                    i += 1;
+                }
+                b',' if !in_quotes => {
+                    let field = &line[start..i].trim();
+                    result.push(Self::trim_quotes(field));
+                    i += 1;
+                    start = i;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        if start < line.len() {
+            let field = &line[start..].trim();
+            result.push(Self::trim_quotes(field));
+        }
+
+        result
+    }
+
+    fn trim_quotes(s: &str) -> &str {
+        let s = s.trim();
+        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+            &s[1..s.len() - 1]
+        } else {
+            s
+        }
+    }
+
+    fn escape_sql_string(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    fn format_sql_value(val: AnyValue) -> String {
+        match val {
+            AnyValue::Null => "NULL".to_string(),
+            AnyValue::String(s) => format!("'{}'", Self::escape_sql_string(s)),
+            AnyValue::Boolean(b) => (if b { "1" } else { "0" }).to_string(),
+            AnyValue::Int8(i) => i.to_string(),
+            AnyValue::Int16(i) => i.to_string(),
+            AnyValue::Int32(i) => i.to_string(),
+            AnyValue::Int64(i) => i.to_string(),
+            AnyValue::UInt8(i) => i.to_string(),
+            AnyValue::UInt16(i) => i.to_string(),
+            AnyValue::UInt32(i) => i.to_string(),
+            AnyValue::UInt64(i) => i.to_string(),
+            AnyValue::Float32(f) => f.to_string(),
+            AnyValue::Float64(f) => f.to_string(),
+            AnyValue::Date(i) => {
+                let date = NaiveDate::from_num_days_from_ce_opt(i)
+                    .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                format!("'{}'", date)
+            }
+            AnyValue::Datetime(ms, _, _) => {
+                let dt = DateTime::from_timestamp_millis(ms)
+                    .unwrap_or(DateTime::from_timestamp(0, 0).unwrap());
+                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S"))
+            }
+            other => format!("'{}'", Self::escape_sql_string(&other.to_string())),
+        }
+    }
+
+    fn insert_dataframe_in_batches(
+        df: &DataFrame,
+        module_name: &str,
+        table_name: &str,
+        columns_def: String,
+        batch_size: usize,
+    ) -> Vec<String> {
+        let total_rows = df.height();
+        let mut inserts = Vec::new();
+
+        for batch_start in (0..total_rows).step_by(batch_size) {
+            let batch_end = usize::min(batch_start + batch_size, total_rows);
+            let mut values_sql = Vec::new();
+
+            for row_idx in batch_start..batch_end {
+                let row_values: Vec<String> = df
+                    .get_columns()
+                    .iter()
+                    .map(|series| {
+                        match series.get(row_idx) {
+                            Ok(val) => Self::format_sql_value(val),
+                            Err(_) => "NULL".to_string(), // fallback
+                        }
+                    })
+                    .collect();
+
+                values_sql.push(format!("({})", row_values.join(", ")));
+            }
+
+            let values_clause = values_sql.join(",\n");
+
+            let insert_statement = format!(
+                "INSERT INTO \"{}.{}_data\" ({}) VALUES\n{};",
+                module_name, table_name, columns_def, values_clause
+            );
+
+            inserts.push(insert_statement);
+        }
+
+        inserts
+    }
+}
+
+impl<'vtab> VTab<'vtab> for UrlTable {
+    type Aux = ();
+    type Cursor = UrlCursor;
+
+    fn create(
+        db: *mut sqlite3,
+        aux: Option<&Self::Aux>,
+        args: VTabArguments,
+    ) -> Result<(String, Self)> {
+        UrlTable::init(db, aux, args, true)
+    }
+
+    fn connect(
+        db: *mut sqlite3,
+        aux: Option<&Self::Aux>,
+        vt_args: VTabArguments,
+    ) -> Result<(String, Self)> {
+        UrlTable::init(db, aux, vt_args, false)
     }
 
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
@@ -280,7 +594,7 @@ impl VTabCursor for UrlCursor {
 }
 
 #[sqlite_entrypoint]
-pub fn sqlite3_url_init(db: *mut sqlite3) -> Result<()> {
-    define_virtual_table::<UrlTable>(db, "url", None)?;
+pub fn sqlite3_httpfs_init(db: *mut sqlite3) -> Result<()> {
+    define_virtual_table::<UrlTable>(db, "httpfs", None)?;
     Ok(())
 }
