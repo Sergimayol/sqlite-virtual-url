@@ -14,6 +14,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS demo USING HTTPFS (
 .header on
 .mode box
 .timer on
+.echo on
 
 SELECT * FROM demo LIMIT 2;
 
