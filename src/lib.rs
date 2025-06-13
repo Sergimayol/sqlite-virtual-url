@@ -5,7 +5,6 @@ mod storage;
 
 use args::parse_args;
 use avro::AvroReader;
-use chrono::{DateTime, NaiveDate};
 use fmt::{get_format, VTabDataFormats};
 use polars::prelude::*;
 use reqwest::blocking::get;
@@ -17,7 +16,9 @@ use sqlite_loadable::{
 use sqlite_loadable::{prelude::*, Error};
 use std::{mem, os::raw::c_int};
 
-use storage::{df_dtype_to_sqlite_dtype, get_storage, Statement, StorageOpts};
+use storage::{
+    df_dtype_to_sqlite_dtype, df_value_to_sqlite_value, get_storage, Statement, StorageOpts,
+};
 
 #[repr(C)]
 struct UrlTable {
@@ -314,39 +315,6 @@ impl UrlTable {
         }
     }
 
-    fn escape_sql_string(s: &str) -> String {
-        s.replace('\'', "''")
-    }
-
-    fn format_sql_value(val: AnyValue) -> String {
-        match val {
-            AnyValue::Null => "NULL".to_string(),
-            AnyValue::String(s) => format!("'{}'", Self::escape_sql_string(s)),
-            AnyValue::Boolean(b) => (if b { "1" } else { "0" }).to_string(),
-            AnyValue::Int8(i) => i.to_string(),
-            AnyValue::Int16(i) => i.to_string(),
-            AnyValue::Int32(i) => i.to_string(),
-            AnyValue::Int64(i) => i.to_string(),
-            AnyValue::UInt8(i) => i.to_string(),
-            AnyValue::UInt16(i) => i.to_string(),
-            AnyValue::UInt32(i) => i.to_string(),
-            AnyValue::UInt64(i) => i.to_string(),
-            AnyValue::Float32(f) => f.to_string(),
-            AnyValue::Float64(f) => f.to_string(),
-            AnyValue::Date(i) => {
-                let date = NaiveDate::from_num_days_from_ce_opt(i)
-                    .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
-                format!("'{}'", date)
-            }
-            AnyValue::Datetime(ms, _, _) => {
-                let dt = DateTime::from_timestamp_millis(ms)
-                    .unwrap_or(DateTime::from_timestamp(0, 0).unwrap());
-                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S"))
-            }
-            other => format!("'{}'", Self::escape_sql_string(&other.to_string())),
-        }
-    }
-
     fn insert_dataframe_in_batches(
         df: &DataFrame,
         module_name: &str,
@@ -367,7 +335,7 @@ impl UrlTable {
                     .iter()
                     .map(|series| {
                         match series.get(row_idx) {
-                            Ok(val) => Self::format_sql_value(val),
+                            Ok(val) => df_value_to_sqlite_value(val),
                             Err(_) => "NULL".to_string(), // fallback
                         }
                     })

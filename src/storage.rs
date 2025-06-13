@@ -3,8 +3,9 @@ use std::{
     ffi::{CStr, CString},
 };
 
+use chrono::{DateTime, NaiveDate};
 use libsqlite3_sys::sqlite3_errstr;
-use polars::prelude::DataType;
+use polars::prelude::{AnyValue, DataType};
 use sqlite_loadable::{
     ext::{
         sqlite3, sqlite3_stmt, sqlite3ext_column_text, sqlite3ext_finalize, sqlite3ext_prepare_v2,
@@ -72,6 +73,39 @@ pub fn df_dtype_to_sqlite_dtype(df_dtype: &DataType) -> SQLiteDataTypes {
         DataType::Date => SQLiteDataTypes::NUMERIC,
         _ => SQLiteDataTypes::TEXT,
     }
+}
+
+pub fn df_value_to_sqlite_value(value: AnyValue) -> String {
+    match value {
+        AnyValue::Null => "NULL".to_string(),
+        AnyValue::String(s) => format!("'{}'", escape_sql_string(s)),
+        AnyValue::Boolean(b) => (if b { "1" } else { "0" }).to_string(),
+        AnyValue::Int8(i) => i.to_string(),
+        AnyValue::Int16(i) => i.to_string(),
+        AnyValue::Int32(i) => i.to_string(),
+        AnyValue::Int64(i) => i.to_string(),
+        AnyValue::UInt8(i) => i.to_string(),
+        AnyValue::UInt16(i) => i.to_string(),
+        AnyValue::UInt32(i) => i.to_string(),
+        AnyValue::UInt64(i) => i.to_string(),
+        AnyValue::Float32(f) => f.to_string(),
+        AnyValue::Float64(f) => f.to_string(),
+        AnyValue::Date(i) => {
+            let date = NaiveDate::from_num_days_from_ce_opt(i)
+                .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+            format!("'{}'", date)
+        }
+        AnyValue::Datetime(ms, _, _) => {
+            let dt = DateTime::from_timestamp_millis(ms)
+                .unwrap_or(DateTime::from_timestamp(0, 0).unwrap());
+            format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S"))
+        }
+        other => format!("'{}'", escape_sql_string(&other.to_string())),
+    }
+}
+
+fn escape_sql_string(s: &str) -> String {
+    s.replace('\'', "''")
 }
 
 type SqliteResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -329,5 +363,71 @@ mod tests {
         assert_eq!(SQLiteDataTypes::TEXT.as_str(), "TEXT");
         assert_eq!(SQLiteDataTypes::NULL.as_str(), "NULL");
         assert_eq!(SQLiteDataTypes::NUMERIC.as_str(), "NUMERIC");
+    }
+
+    #[test]
+    fn test_null() {
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Null), "NULL");
+    }
+
+    #[test]
+    fn test_string() {
+        assert_eq!(
+            df_value_to_sqlite_value(AnyValue::String("hello".into())),
+            "'hello'"
+        );
+        assert_eq!(
+            df_value_to_sqlite_value(AnyValue::String("O'Reilly".into())),
+            "'O''Reilly'"
+        );
+    }
+
+    #[test]
+    fn test_boolean() {
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Boolean(true)), "1");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Boolean(false)), "0");
+    }
+
+    #[test]
+    fn test_integers() {
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Int8(-8)), "-8");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Int16(-16)), "-16");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Int32(-32)), "-32");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Int64(-64)), "-64");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::UInt8(8)), "8");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::UInt16(16)), "16");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::UInt32(32)), "32");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::UInt64(64)), "64");
+    }
+
+    #[test]
+    fn test_floats() {
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Float32(1.23)), "1.23");
+        assert_eq!(df_value_to_sqlite_value(AnyValue::Float64(4.56)), "4.56");
+    }
+
+    #[test]
+    fn test_date() {
+        let value = AnyValue::Date(739040);
+        assert_eq!(df_value_to_sqlite_value(value), "'2024-06-03'");
+
+        let invalid_date = AnyValue::Date(i32::MAX);
+        assert_eq!(df_value_to_sqlite_value(invalid_date), "'1970-01-01'");
+    }
+
+    #[test]
+    fn test_datetime() {
+        let ms = 1_577_836_800_000; // 2020-01-01 00:00:00 UTC
+        let value = AnyValue::Datetime(ms, TimeUnit::Milliseconds, None);
+        assert_eq!(df_value_to_sqlite_value(value), "'2020-01-01 00:00:00'");
+
+        let invalid = AnyValue::Datetime(i64::MAX, TimeUnit::Milliseconds, None);
+        assert_eq!(df_value_to_sqlite_value(invalid), "'1970-01-01 00:00:00'");
+    }
+
+    #[test]
+    fn test_fallback() {
+        let other = AnyValue::String("some'value");
+        assert_eq!(df_value_to_sqlite_value(other), "'some''value'");
     }
 }
