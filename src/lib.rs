@@ -410,6 +410,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
         UrlTable::init(db, aux, vt_args, false)
     }
 
+    // TODO: Improve this by getting data from sqlite tables
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
         let mut used_cols = Vec::new();
         let mut used_ops = Vec::new();
