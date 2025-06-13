@@ -5,7 +5,10 @@ use std::{
 
 use chrono::{DateTime, NaiveDate};
 use libsqlite3_sys::sqlite3_errstr;
-use polars::prelude::{AnyValue, DataType};
+use polars::{
+    frame::DataFrame,
+    prelude::{AnyValue, DataType},
+};
 use sqlite_loadable::{
     ext::{
         sqlite3, sqlite3_stmt, sqlite3ext_column_text, sqlite3ext_finalize, sqlite3ext_prepare_v2,
@@ -75,7 +78,7 @@ pub fn df_dtype_to_sqlite_dtype(df_dtype: &DataType) -> SQLiteDataTypes {
     }
 }
 
-pub fn df_value_to_sqlite_value(value: AnyValue) -> String {
+fn df_value_to_sqlite_value(value: AnyValue) -> String {
     match value {
         AnyValue::Null => "NULL".to_string(),
         AnyValue::String(s) => format!("'{}'", escape_sql_string(s)),
@@ -106,6 +109,48 @@ pub fn df_value_to_sqlite_value(value: AnyValue) -> String {
 
 fn escape_sql_string(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+pub fn generate_inserts_from_dataframe(
+    df: &DataFrame,
+    module_name: &str,
+    table_name: &str,
+    columns_def: String,
+    batch_size: usize,
+) -> Vec<String> {
+    let total_rows = df.height();
+    let mut inserts = Vec::new();
+
+    for batch_start in (0..total_rows).step_by(batch_size) {
+        let batch_end = usize::min(batch_start + batch_size, total_rows);
+        let mut values_sql = Vec::new();
+
+        for row_idx in batch_start..batch_end {
+            let row_values: Vec<String> = df
+                .get_columns()
+                .iter()
+                .map(|series| {
+                    match series.get(row_idx) {
+                        Ok(val) => df_value_to_sqlite_value(val),
+                        Err(_) => "NULL".to_string(), // fallback
+                    }
+                })
+                .collect();
+
+            values_sql.push(format!("({})", row_values.join(", ")));
+        }
+
+        let values_clause = values_sql.join(",\n");
+
+        let insert_statement = format!(
+            "INSERT INTO \"{}.{}_data\" ({}) VALUES\n{};",
+            module_name, table_name, columns_def, values_clause
+        );
+
+        inserts.push(insert_statement);
+    }
+
+    inserts
 }
 
 type SqliteResult<T> = Result<T, Box<dyn std::error::Error>>;

@@ -17,7 +17,7 @@ use sqlite_loadable::{prelude::*, Error};
 use std::{mem, os::raw::c_int};
 
 use storage::{
-    df_dtype_to_sqlite_dtype, df_value_to_sqlite_value, get_storage, Statement, StorageOpts,
+    df_dtype_to_sqlite_dtype, generate_inserts_from_dataframe, get_storage, Statement, StorageOpts,
 };
 
 #[repr(C)]
@@ -105,7 +105,7 @@ impl UrlTable {
                 .map_err(|e| Error::new_message(e.to_string()))?;
             let raw_headers = results.get(0).and_then(|row| row.get(0));
             let headers: Vec<&str> = match raw_headers {
-                Some(h) => Self::split_csv_line(h),
+                Some(h) => Self::split_headers_line(h),
                 None => todo!("Internal bug"),
             };
 
@@ -163,7 +163,7 @@ impl UrlTable {
                 .join(", ");
 
             let batch_size = 1_000;
-            let data_data = Self::insert_dataframe_in_batches(
+            let data_data = generate_inserts_from_dataframe(
                 &df,
                 &vt_args.module_name,
                 &vt_args.table_name,
@@ -273,7 +273,7 @@ impl UrlTable {
         Ok(results.len() > 0)
     }
 
-    fn split_csv_line<'a>(line: &'a str) -> Vec<&'a str> {
+    fn split_headers_line<'a>(line: &'a str) -> Vec<&'a str> {
         let mut result = Vec::new();
         let mut start = 0;
         let mut in_quotes = false;
@@ -314,48 +314,6 @@ impl UrlTable {
             s
         }
     }
-
-    fn insert_dataframe_in_batches(
-        df: &DataFrame,
-        module_name: &str,
-        table_name: &str,
-        columns_def: String,
-        batch_size: usize,
-    ) -> Vec<String> {
-        let total_rows = df.height();
-        let mut inserts = Vec::new();
-
-        for batch_start in (0..total_rows).step_by(batch_size) {
-            let batch_end = usize::min(batch_start + batch_size, total_rows);
-            let mut values_sql = Vec::new();
-
-            for row_idx in batch_start..batch_end {
-                let row_values: Vec<String> = df
-                    .get_columns()
-                    .iter()
-                    .map(|series| {
-                        match series.get(row_idx) {
-                            Ok(val) => df_value_to_sqlite_value(val),
-                            Err(_) => "NULL".to_string(), // fallback
-                        }
-                    })
-                    .collect();
-
-                values_sql.push(format!("({})", row_values.join(", ")));
-            }
-
-            let values_clause = values_sql.join(",\n");
-
-            let insert_statement = format!(
-                "INSERT INTO \"{}.{}_data\" ({}) VALUES\n{};",
-                module_name, table_name, columns_def, values_clause
-            );
-
-            inserts.push(insert_statement);
-        }
-
-        inserts
-    }
 }
 
 impl<'vtab> VTab<'vtab> for UrlTable {
@@ -379,6 +337,7 @@ impl<'vtab> VTab<'vtab> for UrlTable {
     }
 
     // TODO: Improve this by getting data from sqlite tables
+    // Big tables won't fit in a single polars df in mem
     fn best_index(&self, mut info: IndexInfo) -> core::result::Result<(), BestIndexError> {
         let mut used_cols = Vec::new();
         let mut used_ops = Vec::new();
