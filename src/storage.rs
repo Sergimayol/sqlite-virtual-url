@@ -19,14 +19,14 @@ use sqlite_loadable::{
 
 #[derive(Debug, PartialEq)]
 pub enum StorageOpts {
-    MEM,
-    SQLITE,
+    TEMP,
+    DISK,
 }
 
 pub fn get_storage(storage: &str) -> Result<StorageOpts, Box<dyn Error>> {
     match storage.trim().to_uppercase().as_str() {
-        "MEM" => Ok(StorageOpts::MEM),
-        "SQLITE" => Ok(StorageOpts::SQLITE),
+        "TEMP" => Ok(StorageOpts::TEMP),
+        "DISK" => Ok(StorageOpts::DISK),
         _ => Err(format!("Not a valid storage option: {}", storage).into()),
     }
 }
@@ -256,43 +256,76 @@ impl Drop for Statement {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum VTabDataFormats {
+    CSV,
+    AVRO,
+    PARQUET,
+    JSON,
+    JSONL,
+}
+
+impl VTabDataFormats {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VTabDataFormats::CSV => "CSV",
+            VTabDataFormats::AVRO => "AVRO",
+            VTabDataFormats::PARQUET => "PARQUET",
+            VTabDataFormats::JSON => "JSON",
+            VTabDataFormats::JSONL => "JSONL",
+        }
+    }
+}
+
+pub fn get_format(fmt: &str) -> Result<VTabDataFormats, Box<dyn Error>> {
+    match fmt.to_uppercase().as_str() {
+        "CSV" => Ok(VTabDataFormats::CSV),
+        "AVRO" => Ok(VTabDataFormats::AVRO),
+        "PARQUET" => Ok(VTabDataFormats::PARQUET),
+        "JSON" => Ok(VTabDataFormats::JSON),
+        "JSONL" => Ok(VTabDataFormats::JSONL),
+        "NDJSON" => Ok(VTabDataFormats::JSONL),
+        _ => Err(format!("Unknown data format: {}", fmt).into()),
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod types_tests {
     use polars::prelude::TimeUnit;
 
     use super::*;
 
     #[test]
-    fn test_get_storage_mem_uppercase() {
-        let result = get_storage("MEM");
-        assert_eq!(result.unwrap(), StorageOpts::MEM);
+    fn test_get_storage_temp_uppercase() {
+        let result = get_storage("TEMP");
+        assert_eq!(result.unwrap(), StorageOpts::TEMP);
     }
 
     #[test]
-    fn test_get_storage_mem_lowercase() {
-        let result = get_storage("mem");
-        assert_eq!(result.unwrap(), StorageOpts::MEM);
+    fn test_get_storage_temp_lowercase() {
+        let result = get_storage("temp");
+        assert_eq!(result.unwrap(), StorageOpts::TEMP);
     }
 
     #[test]
-    fn test_get_storage_sqlite_uppercase() {
-        let result = get_storage("SQLITE");
-        assert_eq!(result.unwrap(), StorageOpts::SQLITE);
+    fn test_get_storage_disk_uppercase() {
+        let result = get_storage("DISK");
+        assert_eq!(result.unwrap(), StorageOpts::DISK);
     }
 
     #[test]
-    fn test_get_storage_sqlite_mixed_case() {
-        let result = get_storage("Sqlite");
-        assert_eq!(result.unwrap(), StorageOpts::SQLITE);
+    fn test_get_storage_disk_mixed_case() {
+        let result = get_storage("DisK");
+        assert_eq!(result.unwrap(), StorageOpts::DISK);
     }
 
     #[test]
     fn test_get_storage_invalid() {
-        let result = get_storage("disk");
+        let result = get_storage("mem");
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Not a valid storage option: disk"
+            "Not a valid storage option: mem"
         );
     }
 
@@ -308,26 +341,26 @@ mod tests {
 
     #[test]
     fn test_get_storage_with_whitespace() {
-        let result = get_storage(" SQLITE ");
-        assert_eq!(result.unwrap(), StorageOpts::SQLITE);
+        let result = get_storage(" DISK ");
+        assert_eq!(result.unwrap(), StorageOpts::DISK);
     }
 
     #[test]
     fn test_get_storage_with_newline() {
-        let result = get_storage("mem\n");
-        assert_eq!(result.unwrap(), StorageOpts::MEM);
+        let result = get_storage("TEMP\n");
+        assert_eq!(result.unwrap(), StorageOpts::TEMP);
     }
 
     #[test]
     fn test_get_storage_with_tab() {
-        let result = get_storage("\tSQLITE\t");
-        assert_eq!(result.unwrap(), StorageOpts::SQLITE);
+        let result = get_storage("\tDISK\t");
+        assert_eq!(result.unwrap(), StorageOpts::DISK);
     }
 
     #[test]
     fn test_get_storage_with_carriage_return() {
-        let result = get_storage("MEM\r\n");
-        assert_eq!(result.unwrap(), StorageOpts::MEM);
+        let result = get_storage("TEMP\r\n");
+        assert_eq!(result.unwrap(), StorageOpts::TEMP);
     }
 
     #[test]
@@ -474,5 +507,29 @@ mod tests {
     fn test_fallback() {
         let other = AnyValue::String("some'value");
         assert_eq!(df_value_to_sqlite_value(other), "'some''value'");
+    }
+}
+
+#[cfg(test)]
+mod vtab_data_format_tests {
+    use super::*;
+
+    #[test]
+    fn test_get_format_valid() {
+        assert_eq!(get_format("csv").unwrap(), VTabDataFormats::CSV);
+        assert_eq!(get_format("AVRO").unwrap(), VTabDataFormats::AVRO);
+        assert_eq!(get_format("parquet").unwrap(), VTabDataFormats::PARQUET);
+        assert_eq!(get_format("JSON").unwrap(), VTabDataFormats::JSON);
+        assert_eq!(get_format("jsonl").unwrap(), VTabDataFormats::JSONL);
+        assert_eq!(get_format("NDJSON").unwrap(), VTabDataFormats::JSONL);
+    }
+
+    #[test]
+    fn test_get_format_invalid() {
+        let result = get_format("xml");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!(e.to_string(), "Unknown data format: xml");
+        }
     }
 }

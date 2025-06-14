@@ -1,11 +1,9 @@
 mod args;
 mod avro;
-mod fmt;
 mod storage;
 
 use args::parse_args;
 use avro::AvroReader;
-use fmt::{get_format, VTabDataFormats};
 use polars::prelude::*;
 use reqwest::blocking::get;
 use sqlite_loadable::{
@@ -17,7 +15,8 @@ use sqlite_loadable::{prelude::*, Error};
 use std::{mem, os::raw::c_int};
 
 use storage::{
-    df_dtype_to_sqlite_dtype, generate_inserts_from_dataframe, get_storage, Statement, StorageOpts,
+    df_dtype_to_sqlite_dtype, generate_inserts_from_dataframe, get_format, get_storage, Statement,
+    StorageOpts, VTabDataFormats,
 };
 
 #[repr(C)]
@@ -59,7 +58,7 @@ impl UrlTable {
             .get("STORAGE")
             .or_else(|| parsed_args.positional.get(2))
             .map_or_else(
-                || Ok(StorageOpts::SQLITE),
+                || Ok(StorageOpts::DISK),
                 |opt| get_storage(opt).map_err(|err| Error::new_message(format!("{}", err))),
             )?;
 
@@ -143,7 +142,10 @@ impl UrlTable {
             .collect::<Vec<_>>()
             .join(", ");
 
-        if storage == StorageOpts::SQLITE && is_created {
+        // TODO: Maybe table naming should be "module_name.table_name.{data,metadata}"
+        // TODO: Evaluate saving metadata into multiple rows
+        // TODO: If StorageOpts::TEMP create temp tables
+        if storage == StorageOpts::DISK && is_created {
             let data_schema = format!(
                 "CREATE TABLE \"{}.{}_data\" ({});",
                 vt_args.module_name, vt_args.table_name, columns_def
@@ -397,6 +399,7 @@ impl UrlCursor {
 }
 
 impl VTabCursor for UrlCursor {
+    // TODO: This with SQLite tables will be easier, maybe?
     fn filter(
         &mut self,
         _idx_num: c_int,

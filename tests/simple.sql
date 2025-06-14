@@ -7,7 +7,7 @@ SELECT
 CREATE VIRTUAL TABLE IF NOT EXISTS simple_demo USING HTTPFS (
     URL = 'https://raw.githubusercontent.com/plotly/datasets/refs/heads/master/2014_us_cities.csv',
     FORMAT = 'CSV',
-    STORAGE = 'SQLITE'
+    STORAGE = 'DISK'
 );
 
 .bail on
@@ -20,5 +20,5 @@ SELECT * FROM simple_demo LIMIT 2;
 
 .schema
 
-SELECT * FROM "HTTPFS.demo_data" LIMIT 2;
-SELECT * FROM "HTTPFS.demo_metadata";
+SELECT * FROM "HTTPFS.simple_demo_data" LIMIT 2;
+SELECT * FROM "HTTPFS.simple_demo_metadata";
