@@ -103,7 +103,7 @@ impl<'a> AvroReader<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod avro_reader_tests {
     use super::*;
     use avro_rs::{Schema, Writer};
 

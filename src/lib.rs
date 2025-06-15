@@ -1,5 +1,7 @@
 mod args;
 mod avro;
+pub mod dtypes;
+pub mod io;
 mod storage;
 
 use args::parse_args;

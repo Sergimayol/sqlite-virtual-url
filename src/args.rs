@@ -34,7 +34,7 @@ pub fn parse_args(args: Vec<String>) -> ParsedArgs {
 }
 
 #[cfg(test)]
-mod tests {
+mod table_args_tests {
     use super::*;
 
     #[test]
