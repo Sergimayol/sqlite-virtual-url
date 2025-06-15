@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::dtypes::schema::{Schema, TypedValue};
 
 pub mod avro_reader;
@@ -38,7 +40,24 @@ pub trait ReaderConstructor<'a> {
     fn try_new(data: &'a [u8], max_infer_rows: usize) -> Result<Self::ReaderType, ReaderError>;
 }
 
+pub struct Row(Vec<TypedValue>);
+
+impl std::ops::Deref for Row {
+    type Target = [TypedValue];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for Row {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rendered: Vec<String> = self.0.iter().map(|v| v.to_string()).collect();
+        write!(f, "{}", rendered.join(" | "))
+    }
+}
+
 pub trait IterableReader<'a>: Reader {
     // TODO: Item should be a struct packing Type + Value
-    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Vec<TypedValue>, ReaderError>> + 'a>;
+    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Row, ReaderError>> + 'a>;
 }

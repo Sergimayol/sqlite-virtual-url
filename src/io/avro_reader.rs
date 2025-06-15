@@ -1,6 +1,7 @@
 use super::{IterableReader, Reader, ReaderConstructor, ReaderError};
 use crate::dtypes::inference::dtype_from_avro;
 use crate::dtypes::schema::{Schema, SchemaField, TypedValue, ValueLiteral};
+use crate::io::Row;
 use avro_rs::{types::Value, Error as AvroError, Reader as AvroRsReader};
 use std::io::Cursor;
 
@@ -98,12 +99,12 @@ pub struct AvroRowIterator {
 }
 
 impl Iterator for AvroRowIterator {
-    type Item = Result<Vec<TypedValue>, ReaderError>;
+    type Item = Result<Row, ReaderError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.records.next().map(|value| {
             if let Value::Record(fields) = value {
-                fields
+                let typed_values_result: Result<Vec<TypedValue>, ReaderError> = fields
                     .into_iter()
                     .map(|(_, val)| {
                         let dtype = dtype_from_avro(&val);
@@ -113,7 +114,8 @@ impl Iterator for AvroRowIterator {
                             value: literal,
                         })
                     })
-                    .collect()
+                    .collect();
+                typed_values_result.map(Row)
             } else {
                 Err(ReaderError::InvalidFormat("Expected record".to_string()))
             }
@@ -157,7 +159,7 @@ fn convert_avro_value(value: &Value) -> Result<ValueLiteral, ReaderError> {
 }
 
 impl<'a> IterableReader<'a> for AvroReader<'a> {
-    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Vec<TypedValue>, ReaderError>> + 'a> {
+    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Row, ReaderError>> + 'a> {
         Box::new(AvroRowIterator {
             records: self.records.clone().into_iter(),
         })

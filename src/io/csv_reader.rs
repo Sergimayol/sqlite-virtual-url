@@ -4,6 +4,7 @@ use std::io::Cursor;
 use super::{Reader, ReaderConstructor, ReaderError};
 use crate::dtypes::inference::InferredType;
 use crate::dtypes::schema::{DataType, Schema, SchemaField, TypedValue, ValueLiteral};
+use crate::io::Row;
 
 pub struct CsvReader<'a> {
     pub data: &'a [u8],
@@ -104,7 +105,7 @@ pub struct CsvRowIterator<'a> {
 }
 
 impl<'a> Iterator for CsvRowIterator<'a> {
-    type Item = Result<Vec<TypedValue>, super::ReaderError>;
+    type Item = Result<Row, super::ReaderError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = StringRecord::new();
@@ -114,7 +115,7 @@ impl<'a> Iterator for CsvRowIterator<'a> {
                     .iter()
                     .map(|s| parse_str_value(s))
                     .collect::<Vec<TypedValue>>();
-                Some(Ok(row))
+                Some(Ok(Row(row)))
             }
             Ok(false) => None,
             Err(e) => Some(Err(super::ReaderError::from(e))),
@@ -152,9 +153,7 @@ fn parse_str_value(s: &str) -> TypedValue {
 }
 
 impl<'a> super::IterableReader<'a> for CsvReader<'a> {
-    fn iter_rows(
-        &'a self,
-    ) -> Box<dyn Iterator<Item = Result<Vec<TypedValue>, super::ReaderError>> + 'a> {
+    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Row, super::ReaderError>> + 'a> {
         let cursor = Cursor::new(self.data);
         let reader = csv::Reader::from_reader(cursor);
         Box::new(CsvRowIterator { reader })
