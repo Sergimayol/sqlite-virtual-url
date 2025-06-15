@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 use super::{Reader, ReaderConstructor, ReaderError};
 use crate::dtypes::inference::InferredType;
-use crate::dtypes::schema::{Schema, SchemaField};
+use crate::dtypes::schema::{DataType, Schema, SchemaField, TypedValue, ValueLiteral};
 
 pub struct CsvReader<'a> {
     pub data: &'a [u8],
@@ -104,14 +104,49 @@ pub struct CsvRowIterator<'a> {
 }
 
 impl<'a> Iterator for CsvRowIterator<'a> {
-    type Item = Result<Vec<String>, super::ReaderError>;
+    type Item = Result<Vec<TypedValue>, super::ReaderError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = StringRecord::new();
         match self.reader.read_record(&mut buf) {
-            Ok(true) => Some(Ok(buf.iter().map(|s| s.to_string()).collect())),
+            Ok(true) => {
+                let row = buf
+                    .iter()
+                    .map(|s| parse_str_value(s))
+                    .collect::<Vec<TypedValue>>();
+                Some(Ok(row))
+            }
             Ok(false) => None,
             Err(e) => Some(Err(super::ReaderError::from(e))),
+        }
+    }
+}
+
+fn parse_str_value(s: &str) -> TypedValue {
+    if s.is_empty() {
+        TypedValue {
+            dtype: DataType::Null,
+            value: ValueLiteral::Null,
+        }
+    } else if let Ok(v) = s.parse::<i64>() {
+        TypedValue {
+            dtype: DataType::Int,
+            value: ValueLiteral::Int(v),
+        }
+    } else if let Ok(v) = s.parse::<f64>() {
+        TypedValue {
+            dtype: DataType::Real,
+            value: ValueLiteral::Float(v),
+        }
+    } else if let Ok(v) = s.parse::<bool>() {
+        TypedValue {
+            dtype: DataType::Numeric,
+            value: ValueLiteral::Boolean(v),
+        }
+    } else {
+        TypedValue {
+            dtype: DataType::Text,
+            value: ValueLiteral::Text(s.to_string()),
         }
     }
 }
@@ -119,7 +154,7 @@ impl<'a> Iterator for CsvRowIterator<'a> {
 impl<'a> super::IterableReader<'a> for CsvReader<'a> {
     fn iter_rows(
         &'a self,
-    ) -> Box<dyn Iterator<Item = Result<Vec<String>, super::ReaderError>> + 'a> {
+    ) -> Box<dyn Iterator<Item = Result<Vec<TypedValue>, super::ReaderError>> + 'a> {
         let cursor = Cursor::new(self.data);
         let reader = csv::Reader::from_reader(cursor);
         Box::new(CsvRowIterator { reader })

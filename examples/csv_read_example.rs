@@ -1,7 +1,15 @@
-use sqlite_httpfs::io::{
-    csv_reader::CsvReader, IterableReader, Reader, ReaderConstructor, ReaderError,
+use sqlite_httpfs::{
+    dtypes::schema::TypedValue,
+    io::{csv_reader::CsvReader, IterableReader, Reader, ReaderConstructor, ReaderError},
 };
 use std::fs;
+
+fn display_row(row: &[TypedValue]) -> String {
+    row.iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 fn main() -> Result<(), ReaderError> {
     let data = fs::read("benches/data/2014_us_cities.csv")?;
@@ -15,8 +23,10 @@ fn main() -> Result<(), ReaderError> {
     for row_result in csv_reader.iter_rows() {
         let row = row_result?;
         total_rows += 1;
-
-        bytes_read += row.iter().map(|field| field.len()).sum::<usize>() as u64;
+        if total_rows < 5 {
+            println!("{}", display_row(&row));
+        }
+        bytes_read += row.iter().map(|field| field.value.len()).sum::<usize>() as u64;
     }
 
     csv_reader.total_rows = total_rows;

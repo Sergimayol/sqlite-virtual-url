@@ -1,3 +1,5 @@
+use avro_rs::types::Value;
+
 use crate::dtypes::schema::DataType;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,11 +62,38 @@ impl InferredType {
     pub fn to_data_type(&self) -> DataType {
         match self {
             InferredType::Null => DataType::Null,
-            InferredType::Bool => DataType::Boolean,
+            InferredType::Bool => DataType::Numeric,
             InferredType::Int => DataType::Int,
-            InferredType::Float => DataType::Float,
-            InferredType::String => DataType::String,
+            InferredType::Float => DataType::Real,
+            InferredType::String => DataType::Text,
         }
+    }
+}
+
+pub fn dtype_from_avro(value: &Value) -> DataType {
+    match value {
+        Value::Null => DataType::Null,
+        Value::Boolean(_) => DataType::Numeric,
+        Value::Int(_) => DataType::Int,
+        Value::Long(_) => DataType::Int,
+        Value::Float(_) => DataType::Real,
+        Value::Double(_) => DataType::Real,
+        Value::String(_) => DataType::Text,
+        Value::Bytes(_) => DataType::Blob,
+        Value::Fixed(_, _) => DataType::Blob,
+        Value::Enum(_, _) => DataType::Text,
+        Value::Union(inner) => dtype_from_avro(inner),
+        Value::Array(_) => DataType::Blob,
+        Value::Map(_) => DataType::Blob,
+        Value::Record(_) => DataType::Blob,
+        Value::Date(_) => DataType::Numeric,
+        Value::Decimal(_) => DataType::Numeric,
+        Value::TimeMillis(_) => DataType::Int,
+        Value::TimeMicros(_) => DataType::Int,
+        Value::TimestampMillis(_) => DataType::Numeric,
+        Value::TimestampMicros(_) => DataType::Numeric,
+        Value::Duration(_) => DataType::Numeric,
+        Value::Uuid(_) => DataType::Text,
     }
 }
 

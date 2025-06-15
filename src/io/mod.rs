@@ -1,13 +1,13 @@
-use crate::dtypes::schema::Schema;
+use crate::dtypes::schema::{Schema, TypedValue};
 
+pub mod avro_reader;
 pub mod csv_reader;
-// pub mod avro;
-// pub mod parquet;
 
 #[derive(Debug)]
 pub enum ReaderError {
     Io(std::io::Error),
     Csv(csv::Error),
+    Avro(avro_rs::Error),
     InvalidFormat(String),
 }
 
@@ -39,5 +39,6 @@ pub trait ReaderConstructor<'a> {
 }
 
 pub trait IterableReader<'a>: Reader {
-    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Vec<String>, ReaderError>> + 'a>;
+    // TODO: Item should be a struct packing Type + Value
+    fn iter_rows(&'a self) -> Box<dyn Iterator<Item = Result<Vec<TypedValue>, ReaderError>> + 'a>;
 }
